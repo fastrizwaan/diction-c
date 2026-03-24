@@ -18,6 +18,8 @@ static AppSettings *app_settings = NULL;
 
 static void populate_dict_sidebar(void);      // forward declaration
 static void start_async_dict_loading(void);   // forward declaration
+static void on_search_changed(GtkSearchEntry *entry, gpointer user_data); // forward declaration
+static void on_random_clicked(GtkButton *btn, gpointer user_data);
 
 static gboolean dict_list_filter_func(GtkListBoxRow *row, gpointer user_data) {
     (void)user_data;
@@ -163,6 +165,40 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
 
     // Update sidebar filter
     gtk_list_box_invalidate_filter(dict_listbox);
+}
+
+static void on_random_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn; (void)user_data;
+    if (!all_dicts) return;
+
+    // Count dicts
+    int count = 0;
+    for (DictEntry *e = all_dicts; e; e = e->next) if (e->dict && e->dict->index->root) count++;
+    if (count == 0) return;
+
+    // Pick random dict
+    int target = rand() % count;
+    DictEntry *e = all_dicts;
+    int cur = 0;
+    while (e) {
+        if (e->dict && e->dict->index->root) {
+            if (cur == target) break;
+            cur++;
+        }
+        e = e->next;
+    }
+
+    if (e && e->dict && e->dict->index->root) {
+        SplayNode *node = splay_tree_get_random(e->dict->index->root);
+        if (node) {
+            const char *word = e->dict->data + node->key_offset;
+            size_t len = node->key_length;
+            char *word_str = g_strndup(word, len);
+            gtk_editable_set_text(GTK_EDITABLE(search_entry), word_str);
+            g_free(word_str);
+            // Search will be triggered by "search-changed" signal
+        }
+    }
 }
 
 static void on_dict_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data) {
@@ -363,6 +399,12 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
                 "<h2>No Dictionaries Found</h2>"
                 "<p>Open <b>Preferences</b> and add a dictionary directory.</p>",
                 "file:///");
+        } else {
+            // Do a random search on startup if nothing is there
+            const char *current = gtk_editable_get_text(GTK_EDITABLE(search_entry));
+            if (strlen(current) == 0) {
+                on_random_clicked(NULL, NULL);
+            }
         }
     }
 
@@ -430,6 +472,13 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_size_request(GTK_WIDGET(search_entry), 350, -1);
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(search_entry));
     g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+
+    /* Random button */
+    GtkWidget *random_btn = gtk_button_new_from_icon_name("media-playlist-shuffle-symbolic");
+    gtk_widget_add_css_class(random_btn, "flat");
+    gtk_widget_set_tooltip_text(random_btn, "Random Headword");
+    g_signal_connect(random_btn, "clicked", G_CALLBACK(on_random_clicked), NULL);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header), random_btn);
 
     /* Settings button */
     GtkWidget *settings_btn = gtk_menu_button_new();

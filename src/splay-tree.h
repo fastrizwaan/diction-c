@@ -30,5 +30,6 @@ SplayNode* splay_tree_search_first(SplayTree *tree, const char *query);
 // Helper to iterate or get partial matches if needed
 SplayNode* splay_tree_min(SplayNode *node);
 SplayNode* splay_tree_successor(SplayNode *node);
+SplayNode* splay_tree_get_random(SplayNode *node);
 
 void splay_tree_free(SplayTree *tree);

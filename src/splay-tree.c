@@ -224,3 +224,24 @@ void splay_tree_free(SplayTree *tree) {
         free(tree);
     }
 }
+
+SplayNode* splay_tree_get_random(SplayNode *node) {
+    if (!node) return NULL;
+    
+    SplayNode *curr = node;
+    // Simple random walk down the tree. 
+    // This is not perfectly uniform but better than nothing without size tracking.
+    while (1) {
+        int r = rand() % 3;
+        if (r == 0) return curr; // Pick this node
+        if (r == 1) {
+            if (curr->left) curr = curr->left;
+            else if (curr->right) curr = curr->right;
+            else return curr;
+        } else {
+            if (curr->right) curr = curr->right;
+            else if (curr->left) curr = curr->left;
+            else return curr;
+        }
+    }
+}
