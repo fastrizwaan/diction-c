@@ -69,7 +69,8 @@ static int parse_ifo_metadata(const char *ifo_path,
                                uint32_t *wordcount,
                                uint32_t *idxfilesize,
                                char *sametypesequence,
-                               size_t sts_len) {
+                               size_t sts_len,
+                               char **bookname) {
     FILE *f = fopen(ifo_path, "r");
     if (!f) return -1;
 
@@ -77,6 +78,7 @@ static int parse_ifo_metadata(const char *ifo_path,
     *wordcount = 0;
     *idxfilesize = 0;
     sametypesequence[0] = '\0';
+    if (bookname) *bookname = NULL;
 
     /* First line should be "StarDict's dict ifo file" */
     if (!fgets(line, sizeof(line), f)) { fclose(f); return -1; }
@@ -99,6 +101,8 @@ static int parse_ifo_metadata(const char *ifo_path,
         } else if (strncmp(line, "sametypesequence=", 17) == 0) {
             strncpy(sametypesequence, line + 17, sts_len - 1);
             sametypesequence[sts_len - 1] = '\0';
+        } else if (strncmp(line, "bookname=", 9) == 0 && bookname) {
+            *bookname = strdup(line + 9);
         }
     }
     fclose(f);
@@ -110,10 +114,12 @@ DictMmap* parse_stardict(const char *ifo_path) {
 
     uint32_t wordcount = 0, idxfilesize = 0;
     char sametypesequence[32] = {0};
+    char *bookname = NULL;
 
     if (parse_ifo_metadata(ifo_path, &wordcount, &idxfilesize,
-                           sametypesequence, sizeof(sametypesequence)) != 0) {
+                           sametypesequence, sizeof(sametypesequence), &bookname) != 0) {
         fprintf(stderr, "[IFO] Failed to parse .ifo: %s\n", ifo_path);
+        if (bookname) free(bookname);
         return NULL;
     }
 
@@ -324,6 +330,7 @@ DictMmap* parse_stardict(const char *ifo_path) {
     dict->tmp_file = NULL;
     dict->data = dict_data;
     dict->size = dict_size;
+    dict->name = bookname; // Ownership transferred
     dict->index = splay_tree_new(dict->data, dict->size);
 
     /* Read .idx file and parse entries for indexing */

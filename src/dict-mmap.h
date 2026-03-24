@@ -10,6 +10,7 @@ typedef struct DictMmap {
     const char *data;
     size_t size;
     SplayTree *index;
+    char *name;
     char *resource_dir;
 } DictMmap;
 

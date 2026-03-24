@@ -283,6 +283,14 @@ DictMmap* parse_bgl_file(const char *path) {
                                   def_offset, def_len);
                 word_count++;
             }
+        } else if (block_type == 3) {
+            /* Info block: sub-type 1 is usually the title */
+            if (block_len > 1) {
+                unsigned int sub_type = block_data[0];
+                if (sub_type == 1 && !dict->name) {
+                    dict->name = strndup((const char *)block_data + 1, block_len - 1);
+                }
+            }
         }
     }
 

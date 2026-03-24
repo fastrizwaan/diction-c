@@ -108,8 +108,25 @@ static void parse_dsl_into_tree(DictMmap *dict) {
         if (p < end && *p == '\n') p++;
 
         /* Skip empty / comment / bare-CR lines */
-        if (len == 0 || line_start[0] == '#')
+        if (len == 0) continue;
+        
+        if (line_start[0] == '#') {
+            /* Support #NAME "Dictionary Name" header */
+            if (len > 6 && strncasecmp(line_start, "#NAME", 5) == 0) {
+                const char *val_start = line_start + 5;
+                while (val_start < line_start + len && (*val_start == ' ' || *val_start == '\t' || *val_start == '\"')) 
+                    val_start++;
+                const char *val_end = line_start + len;
+                while (val_end > val_start && (*(val_end - 1) == '\r' || *(val_end - 1) == '\"' || *(val_end - 1) == ' ' || *(val_end - 1) == '\t'))
+                    val_end--;
+                
+                if (val_end > val_start && !dict->name) {
+                    dict->name = strndup(val_start, (size_t)(val_end - val_start));
+                    printf("[DSL] Found dictionary name: %s\n", dict->name);
+                }
+            }
             continue;
+        }
 
         size_t actual_len = len;
         if (actual_len > 0 && line_start[actual_len - 1] == '\r')
@@ -429,6 +446,7 @@ void dict_mmap_close(DictMmap *dict) {
         splay_tree_free(dict->index);
         if (dict->data) munmap((void*)dict->data, dict->size);
         if (dict->fd >= 0) close(dict->fd);
+        if (dict->name) free(dict->name);
         if (dict->resource_dir) free(dict->resource_dir);
         free(dict);
     }

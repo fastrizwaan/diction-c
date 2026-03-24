@@ -491,6 +491,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 }
 
 int main(int argc, char *argv[]) {
+    // Disable compositing to fix rendering issues
+    setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 1);
     // Load settings first
     app_settings = settings_load();
 

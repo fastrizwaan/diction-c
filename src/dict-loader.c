@@ -120,7 +120,11 @@ static void scan_recursive(const char *dirpath, DictEntry **head) {
         }
 
         DictEntry *entry = calloc(1, sizeof(DictEntry));
-        entry->name = basename_noext(full);
+        if (loaded->name) {
+            entry->name = strdup(loaded->name);
+        } else {
+            entry->name = basename_noext(full);
+        }
         entry->path = full;
         entry->format = fmt;
         entry->dict = loaded;
