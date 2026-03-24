@@ -58,8 +58,17 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     for (DictEntry *e = all_dicts; e; e = e->next, dict_idx++) {
         if (!e->dict) continue;
 
-        SplayNode *res = splay_tree_search(e->dict->index, query);
-        if (res != NULL) {
+        SplayNode *res = splay_tree_search_first(e->dict->index, query);
+        size_t q_len = strlen(query);
+        int dict_header_shown = 0;
+
+        while (res != NULL) {
+            // Check if this node is still a match (case-insensitive and same length)
+            if (res->key_length != q_len || 
+                strncasecmp(e->dict->data + res->key_offset, query, q_len) != 0) {
+                break;
+            }
+
             const char *def_ptr = e->dict->data + res->val_offset;
             size_t def_len = res->val_length;
 
@@ -74,7 +83,10 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
                 }
                 link_target[l] = '\0';
 
-                SplayNode *red_res = splay_tree_search(e->dict->index, link_target);
+                // For redirects, we just take the first match for simplicity, 
+                // or we could recursively handle it. But usually redirects are 1-to-1 or 1-to-many.
+                // Here we just use the first match of the target.
+                SplayNode *red_res = splay_tree_search_first(e->dict->index, link_target);
                 if (red_res) {
                     def_ptr = e->dict->data + red_res->val_offset;
                     def_len = red_res->val_length;
@@ -94,16 +106,22 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
                 const char *bar_fg = dark_mode ? "#aaaaaa" : "#555555";
                 const char *bar_border = dark_mode ? "#444444" : "#dddddd";
 
-                g_string_append_printf(html_res,
-                    "<div id='dict-%d' class='dict-source' style='background: %s; color: %s; "
-                    "padding: 4px 12px; margin: 20px -10px 10px -10px; border-bottom: 1px solid %s; "
-                    "font-size: 0.85em; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em;'>"
-                    "%s</div>",
-                    dict_idx, bar_bg, bar_fg, bar_border, e->name);
+                if (!dict_header_shown) {
+                    g_string_append_printf(html_res,
+                        "<div id='dict-%d' class='dict-source' style='background: %s; color: %s; "
+                        "padding: 4px 12px; margin: 20px -10px 10px -10px; border-bottom: 1px solid %s; "
+                        "font-size: 0.85em; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em;'>"
+                        "%s</div>",
+                        dict_idx, bar_bg, bar_fg, bar_border, e->name);
+                    dict_header_shown = 1;
+                }
+
                 g_string_append(html_res, rendered);
                 free(rendered);
                 found_count++;
             }
+            
+            res = splay_tree_successor(res);
         }
     }
 

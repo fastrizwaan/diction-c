@@ -24,6 +24,9 @@ void splay_tree_insert(SplayTree *tree, size_t key_offset, size_t key_length, si
 // Searches for an exact match
 SplayNode* splay_tree_search(SplayTree *tree, const char *query);
 
+// Searches for the first match (useful for multi-match duplicates)
+SplayNode* splay_tree_search_first(SplayTree *tree, const char *query);
+
 // Helper to iterate or get partial matches if needed
 SplayNode* splay_tree_min(SplayNode *node);
 SplayNode* splay_tree_successor(SplayNode *node);

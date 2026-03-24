@@ -160,6 +160,37 @@ SplayNode* splay_tree_search(SplayTree *tree, const char *query) {
     return NULL;
 }
 
+SplayNode* splay_tree_search_first(SplayTree *tree, const char *query) {
+    SplayNode *x = tree->root;
+    SplayNode *prev = NULL;
+    SplayNode *first = NULL;
+    size_t q_len = strlen(query);
+
+    while (x != NULL) {
+        prev = x;
+        int cmp = compare_keys(tree->mmap_data, x->key_offset, x->key_length, query, q_len);
+        if (cmp == 0) {
+            first = x;
+            x = x->left; // Look for earlier matches in the left subtree
+        } else if (cmp > 0) {
+            x = x->left;
+        } else {
+            x = x->right;
+        }
+    }
+    
+    if (first != NULL) {
+        splay(tree, first);
+        return first;
+    }
+
+    // If not found, splay the last accessed node anyway
+    if (prev != NULL) {
+        splay(tree, prev);
+    }
+    return NULL;
+}
+
 SplayNode* splay_tree_min(SplayNode *node) {
     while (node->left != NULL) {
         node = node->left;
