@@ -16,6 +16,9 @@ static GtkSearchEntry *search_entry = NULL;
 static char *last_search_query = NULL;
 static AppSettings *app_settings = NULL;
 
+static void populate_dict_sidebar(void);      // forward declaration
+static void start_async_dict_loading(void);   // forward declaration
+
 static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPolicyDecisionType t, gpointer user_data) {
     (void)v;
     if (t == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
@@ -183,11 +186,33 @@ static void on_theme_changed(AdwStyleManager *manager, GParamSpec *pspec, gpoint
     refresh_search_results();
 }
 
+static void reload_dictionaries_from_settings(void *user_data) {
+    (void)user_data;
+    // Free existing dicts
+    dict_loader_free(all_dicts);
+    all_dicts = NULL;
+    active_entry = NULL;
+
+    // Clear sidebar
+    GtkWidget *child;
+    while ((child = gtk_widget_get_first_child(GTK_WIDGET(dict_listbox))))
+        gtk_list_box_remove(dict_listbox, child);
+
+    // Show "Reloading..." and start async scan
+    webkit_web_view_load_html(web_view,
+        "<html><body style='font-family: sans-serif; text-align: center; margin-top: 3em; opacity: 0.6;'>"
+        "<h2>Reloading dictionaries\u2026</h2><p>Please wait.</p>"
+        "</body></html>", NULL);
+
+    start_async_dict_loading();
+}
+
 static void show_settings_dialog(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     (void)action; (void)parameter;
     GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(user_data));
     if (window) {
-        GtkWidget *dialog = settings_dialog_new(window, app_settings);
+        GtkWidget *dialog = settings_dialog_new(window, app_settings, style_manager,
+            reload_dictionaries_from_settings, NULL);
         adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(window));
     }
 }
@@ -208,18 +233,122 @@ static void show_about_dialog(GSimpleAction *action, GVariant *parameter, gpoint
     }
 }
 
+static void append_entry_to_sidebar(DictEntry *e) {
+    GtkWidget *label = gtk_label_new(e->name);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_hexpand(label, TRUE);
+    gtk_widget_set_margin_start(label, 8);
+    gtk_widget_set_margin_end(label, 8);
+    gtk_widget_set_margin_top(label, 4);
+    gtk_widget_set_margin_bottom(label, 4);
+    gtk_list_box_append(dict_listbox, label);
+}
+
 static void populate_dict_sidebar(void) {
-    for (DictEntry *e = all_dicts; e; e = e->next) {
-        GtkWidget *label = gtk_label_new(e->name);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-        gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-        gtk_widget_set_hexpand(label, TRUE);
-        gtk_widget_set_margin_start(label, 8);
-        gtk_widget_set_margin_end(label, 8);
-        gtk_widget_set_margin_top(label, 4);
-        gtk_widget_set_margin_bottom(label, 4);
-        gtk_list_box_append(dict_listbox, label);
+    for (DictEntry *e = all_dicts; e; e = e->next)
+        append_entry_to_sidebar(e);
+}
+
+// ------- Async loading infrastructure -------
+typedef struct {
+    char **dirs;    // NULL-terminated array of directory paths to scan
+    int   n_dirs;
+} LoadThreadArgs;
+
+// Payload passed from thread to main thread via g_idle_add
+typedef struct {
+    DictEntry *entry; // single loaded entry (next == NULL on delivery)
+    gboolean   done;  // TRUE = loading finished
+} LoadIdleData;
+
+static gboolean on_dict_loaded_idle(gpointer user_data) {
+    LoadIdleData *ld = user_data;
+
+    if (!ld->done && ld->entry) {
+        DictEntry *e = ld->entry;
+        e->next = NULL;
+
+        // Append to global list
+        if (!all_dicts) {
+            all_dicts = e;
+        } else {
+            DictEntry *last = all_dicts;
+            while (last->next) last = last->next;
+            last->next = e;
+        }
+
+        // Add to sidebar
+        append_entry_to_sidebar(e);
+
+        // Auto-select the very first dictionary
+        if (all_dicts == e && !active_entry) {
+            active_entry = e;
+            GtkListBoxRow *first = gtk_list_box_get_row_at_index(dict_listbox, 0);
+            if (first) gtk_list_box_select_row(dict_listbox, first);
+        }
     }
+
+    if (ld->done) {
+        // Loading complete — update welcome page if no dicts found
+        if (!all_dicts) {
+            webkit_web_view_load_html(web_view,
+                "<h2>No Dictionaries Found</h2>"
+                "<p>Open <b>Preferences</b> and add a dictionary directory.</p>",
+                "file:///");
+        }
+    }
+
+    g_free(ld);
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer dict_load_thread(gpointer user_data) {
+    LoadThreadArgs *args = user_data;
+
+    for (int i = 0; i < args->n_dirs; i++) {
+        DictEntry *dicts = dict_loader_scan_directory(args->dirs[i]);
+        // Walk the linked list and deliver each entry individually
+        DictEntry *e = dicts;
+        while (e) {
+            DictEntry *next = e->next;
+            e->next = NULL;
+
+            LoadIdleData *ld = g_new0(LoadIdleData, 1);
+            ld->entry = e;
+            ld->done  = FALSE;
+            g_idle_add(on_dict_loaded_idle, ld);
+
+            e = next;
+        }
+    }
+
+    // Signal completion
+    LoadIdleData *done_ld = g_new0(LoadIdleData, 1);
+    done_ld->done = TRUE;
+    g_idle_add(on_dict_loaded_idle, done_ld);
+
+    // Free args
+    for (int i = 0; i < args->n_dirs; i++)
+        g_free(args->dirs[i]);
+    g_free(args->dirs);
+    g_free(args);
+    return NULL;
+}
+
+static void start_async_dict_loading(void) {
+    if (!app_settings || app_settings->dictionary_dirs->len == 0)
+        return;
+
+    LoadThreadArgs *args = g_new0(LoadThreadArgs, 1);
+    args->n_dirs = (int)app_settings->dictionary_dirs->len;
+    args->dirs   = g_new(char *, args->n_dirs + 1);
+    for (int i = 0; i < args->n_dirs; i++)
+        args->dirs[i] = g_strdup(g_ptr_array_index(app_settings->dictionary_dirs, i));
+    args->dirs[args->n_dirs] = NULL;
+
+    GThread *thread = g_thread_new("dict-loader", dict_load_thread, args);
+    g_thread_unref(thread); // fire-and-forget
 }
 
 static void on_activate(GtkApplication *app, gpointer user_data) {
@@ -318,25 +447,37 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     }
     webkit_web_view_set_background_color(web_view, &bg_color);
 
-    if (all_dicts) {
+    /* Show the window FIRST, then start background loading */
+    webkit_web_view_load_html(web_view,
+        "<html><body style='font-family: sans-serif; text-align: center; margin-top: 3em; opacity: 0.6;'>"
+        "<h2>Loading dictionaries…</h2><p>Please wait.</p>"
+        "</body></html>", NULL);
+
+    gtk_window_present(GTK_WINDOW(window));
+
+    // Start async loading if we have settings-based dirs
+    if (!all_dicts) {
+        start_async_dict_loading();
+    } else {
+        // CLI-mode: dicts already loaded synchronously, just populate
+        populate_dict_sidebar();
+        if (all_dicts) {
+            active_entry = all_dicts;
+            GtkListBoxRow *first = gtk_list_box_get_row_at_index(dict_listbox, 0);
+            if (first) gtk_list_box_select_row(dict_listbox, first);
+        }
         webkit_web_view_load_html(web_view,
             "<h2>Welcome to Diction</h2>"
             "<p>Select a dictionary from the sidebar and start searching.</p>", "file:///");
-    } else {
-        webkit_web_view_load_html(web_view,
-            "<h2>No Dictionaries Found</h2>"
-            "<p>Pass a dictionary directory as argument:<br>"
-            "<code>./diction /path/to/dictionaries/</code></p>", "file:///");
     }
-
-    gtk_window_present(GTK_WINDOW(window));
 }
 
 int main(int argc, char *argv[]) {
     // Load settings first
     app_settings = settings_load();
 
-    /* Load dictionaries: accept a single file or a directory */
+    /* Load dictionaries only in CLI mode (single file or directory argument).      *
+     * When running with no arguments, loading happens async after window is shown. */
     if (argc > 1) {
         struct stat st;
         if (stat(argv[1], &st) == 0) {
@@ -358,25 +499,8 @@ int main(int argc, char *argv[]) {
                 }
             }
         }
-    } else {
-        /* No arguments: scan directories from settings */
-        if (app_settings && app_settings->dictionary_dirs->len > 0) {
-            for (guint i = 0; i < app_settings->dictionary_dirs->len; i++) {
-                const char *dir = g_ptr_array_index(app_settings->dictionary_dirs, i);
-                DictEntry *dicts = dict_loader_scan_directory(dir);
-                if (dicts) {
-                    // Append to list
-                    if (!all_dicts) {
-                        all_dicts = dicts;
-                    } else {
-                        DictEntry *last = all_dicts;
-                        while (last->next) last = last->next;
-                        last->next = dicts;
-                    }
-                }
-            }
-        }
     }
+    /* No else: settings-based dirs are loaded async in on_activate */
 
     AdwApplication *app = adw_application_new("org.diction.App", G_APPLICATION_DEFAULT_FLAGS);
 

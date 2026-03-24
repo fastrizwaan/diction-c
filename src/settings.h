@@ -34,7 +34,9 @@ void settings_save(AppSettings *settings);
 void settings_free(AppSettings *settings);
 
 // Settings dialog
-GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings);
+GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
+                               AdwStyleManager *style_manager,
+                               void (*reload_callback)(void *), void *reload_user_data);
 void settings_dialog_run(GtkWidget *dialog);
 
 // Helper functions

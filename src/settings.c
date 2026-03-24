@@ -242,7 +242,7 @@ void settings_add_directory(AppSettings *settings, const char *path) {
 void settings_remove_directory(AppSettings *settings, const char *path) {
     for (guint i = 0; i < settings->dictionary_dirs->len; i++) {
         if (strcmp(g_ptr_array_index(settings->dictionary_dirs, i), path) == 0) {
-            g_free(g_ptr_array_index(settings->dictionary_dirs, i));
+            // g_ptr_array_remove_index calls g_free via the array's destroy func
             g_ptr_array_remove_index(settings->dictionary_dirs, i);
             return;
         }
@@ -263,7 +263,7 @@ void settings_remove_dictionary(AppSettings *settings, const char *id) {
     for (guint i = 0; i < settings->dictionaries->len; i++) {
         DictConfig *cfg = g_ptr_array_index(settings->dictionaries, i);
         if (strcmp(cfg->id, id) == 0) {
-            dict_config_free(cfg);
+            // g_ptr_array_remove_index calls dict_config_free via the array's destroy func
             g_ptr_array_remove_index(settings->dictionaries, i);
             return;
         }
@@ -301,7 +301,7 @@ void settings_remove_group(AppSettings *settings, const char *id) {
     for (guint i = 0; i < settings->dictionary_groups->len; i++) {
         DictGroup *grp = g_ptr_array_index(settings->dictionary_groups, i);
         if (strcmp(grp->id, id) == 0) {
-            dict_group_free(grp);
+            // g_ptr_array_remove_index calls dict_group_free via the array's destroy func
             g_ptr_array_remove_index(settings->dictionary_groups, i);
             return;
         }

@@ -15,6 +15,9 @@ typedef struct {
     GtkWidget *move_down_btn;
     GtkWidget *create_group_btn;
     char *selected_dict_id;
+    AdwStyleManager *style_manager; // for live theme apply
+    void (*reload_callback)(void *); // called on rescan
+    void *reload_user_data;
 } SettingsDialogData;
 
 static void update_dir_list(SettingsDialogData *data);
@@ -33,9 +36,12 @@ static void dir_remove_data_free(DirRemoveData *d) {
     g_free(d);
 }
 
-static void on_add_directory_response(GtkNativeDialog *dialog, int response, SettingsDialogData *data) {
-    if (response == GTK_RESPONSE_ACCEPT) {
-        GFile *file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(dialog));
+static void on_add_directory_response(GObject *source, GAsyncResult *result, gpointer user_data) {
+    GtkFileDialog *chooser = GTK_FILE_DIALOG(source);
+    SettingsDialogData *data = user_data;
+    GError *error = NULL;
+    GFile *file = gtk_file_dialog_select_folder_finish(chooser, result, &error);
+    if (file) {
         char *path = g_file_get_path(file);
         if (path) {
             settings_add_directory(data->settings, path);
@@ -43,8 +49,10 @@ static void on_add_directory_response(GtkNativeDialog *dialog, int response, Set
             g_free(path);
         }
         g_object_unref(file);
+    } else if (error) {
+        g_error_free(error);
     }
-    g_object_unref(dialog);
+    g_object_unref(chooser);
 }
 
 static void on_add_directory(GtkButton *btn, SettingsDialogData *data) {
@@ -52,17 +60,26 @@ static void on_add_directory(GtkButton *btn, SettingsDialogData *data) {
     GtkFileDialog *chooser = gtk_file_dialog_new();
     gtk_file_dialog_set_title(chooser, "Select Dictionary Directory");
     gtk_file_dialog_select_folder(chooser, GTK_WINDOW(data->dialog), NULL,
-        (GAsyncReadyCallback)on_add_directory_response, data);
+        on_add_directory_response, data);
+}
+
+static gboolean on_remove_directory_idle(gpointer user_data) {
+    SettingsDialogData *data = user_data;
+    update_dir_list(data);
+    return G_SOURCE_REMOVE;
 }
 
 static void on_remove_directory_clicked(GtkButton *btn, DirRemoveData *d) {
+    (void)btn;
     settings_remove_directory(d->data->settings, d->path);
-    update_dir_list(d->data);
+    g_idle_add(on_remove_directory_idle, d->data);
 }
 
 static void on_rescan_directories(GtkButton *btn, SettingsDialogData *data) {
     (void)btn;
     settings_save(data->settings);
+    if (data->reload_callback)
+        data->reload_callback(data->reload_user_data);
 }
 
 // Dictionary callbacks
@@ -79,14 +96,20 @@ static void dict_move_data_free(DictMoveData *d) {
 
 static void on_move_dictionary(GtkButton *btn, DictMoveData *d) {
     (void)btn;
-    settings_move_dictionary(d->data->settings, d->id, d->direction);
+    // Use the currently-selected dict id at click time
+    const char *id = d->data->selected_dict_id;
+    if (!id) return;
+    settings_move_dictionary(d->data->settings, id, d->direction);
     update_dict_list(d->data);
     refresh_move_buttons(d->data);
 }
 
-static void on_add_dictionary_file_response(GtkNativeDialog *dialog, int response, SettingsDialogData *data) {
-    if (response == GTK_RESPONSE_ACCEPT) {
-        GFile *file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(dialog));
+static void on_add_dictionary_file_response(GObject *source, GAsyncResult *result, gpointer user_data) {
+    GtkFileDialog *chooser = GTK_FILE_DIALOG(source);
+    SettingsDialogData *data = user_data;
+    GError *error = NULL;
+    GFile *file = gtk_file_dialog_open_finish(chooser, result, &error);
+    if (file) {
         char *path = g_file_get_path(file);
         if (path) {
             char *name = g_path_get_basename(path);
@@ -98,8 +121,10 @@ static void on_add_dictionary_file_response(GtkNativeDialog *dialog, int respons
             g_free(path);
         }
         g_object_unref(file);
+    } else if (error) {
+        g_error_free(error);
     }
-    g_object_unref(dialog);
+    g_object_unref(chooser);
 }
 
 static void on_add_dictionary_file(GtkButton *btn, SettingsDialogData *data) {
@@ -121,7 +146,7 @@ static void on_add_dictionary_file(GtkButton *btn, SettingsDialogData *data) {
     g_object_unref(filter);
     
     gtk_file_dialog_open(chooser, GTK_WINDOW(data->dialog), NULL,
-        (GAsyncReadyCallback)on_add_dictionary_file_response, data);
+        on_add_dictionary_file_response, data);
 }
 
 typedef struct {
@@ -134,13 +159,19 @@ static void dict_remove_data_free(DictRemoveData *d) {
     g_free(d);
 }
 
+static gboolean on_remove_dictionary_idle(gpointer user_data) {
+    SettingsDialogData *data = user_data;
+    update_dict_list(data);
+    refresh_move_buttons(data);
+    return G_SOURCE_REMOVE;
+}
+
 static void on_remove_dictionary_clicked(GtkButton *btn, DictRemoveData *d) {
     (void)btn;
     settings_remove_dictionary(d->data->settings, d->id);
     g_free(d->data->selected_dict_id);
     d->data->selected_dict_id = NULL;
-    update_dict_list(d->data);
-    refresh_move_buttons(d->data);
+    g_idle_add(on_remove_dictionary_idle, d->data);
 }
 
 typedef struct {
@@ -152,9 +183,10 @@ static void dict_switch_data_free(DictSwitchData *d) {
     g_free(d);
 }
 
-static void on_dict_switch_state(GtkSwitch *sw, GVariant *state, DictConfig *cfg) {
+static gboolean on_dict_switch_state(GtkSwitch *sw, gboolean state, DictSwitchData *sd) {
     (void)sw;
-    cfg->enabled = g_variant_get_boolean(state);
+    sd->cfg->enabled = state ? 1 : 0;
+    return FALSE; // allow GtkSwitch to update its visual state
 }
 
 static void on_dict_row_selected(GtkListBox *list, GtkListBoxRow *row, SettingsDialogData *data) {
@@ -202,10 +234,16 @@ static void group_remove_data_free(GroupRemoveData *d) {
     g_free(d);
 }
 
+static gboolean on_remove_group_idle(gpointer user_data) {
+    SettingsDialogData *data = user_data;
+    update_group_list(data);
+    return G_SOURCE_REMOVE;
+}
+
 static void on_remove_group_clicked(GtkButton *btn, GroupRemoveData *d) {
     (void)btn;
     settings_remove_group(d->data->settings, d->id);
-    update_group_list(d->data);
+    g_idle_add(on_remove_group_idle, d->data);
 }
 
 static void on_create_group_response(AdwAlertDialog *dialog, const char *response, GtkEntry *entry) {
@@ -371,15 +409,30 @@ static void on_dialog_closed(SettingsDialogData *data) {
 static void on_theme_changed(AdwComboRow *row, GParamSpec *pspec, SettingsDialogData *data) {
     (void)pspec;
     guint idx = adw_combo_row_get_selected(row);
-    char *new_theme = g_strdup(idx == 1 ? "light" : (idx == 2 ? "dark" : "system"));
+    const char *theme_str = (idx == 1) ? "light" : (idx == 2) ? "dark" : "system";
     g_free(data->settings->theme);
-    data->settings->theme = new_theme;
+    data->settings->theme = g_strdup(theme_str);
+
+    // Apply theme immediately via style manager
+    if (data->style_manager) {
+        if (idx == 1)
+            adw_style_manager_set_color_scheme(data->style_manager, ADW_COLOR_SCHEME_FORCE_LIGHT);
+        else if (idx == 2)
+            adw_style_manager_set_color_scheme(data->style_manager, ADW_COLOR_SCHEME_FORCE_DARK);
+        else
+            adw_style_manager_set_color_scheme(data->style_manager, ADW_COLOR_SCHEME_DEFAULT);
+    }
 }
 
 // Main dialog creation
-GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings) {
+GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
+                               AdwStyleManager *style_manager,
+                               void (*reload_callback)(void *), void *reload_user_data) {
     SettingsDialogData *data = g_new0(SettingsDialogData, 1);
     data->settings = settings;
+    data->style_manager = style_manager;
+    data->reload_callback = reload_callback;
+    data->reload_user_data = reload_user_data;
 
     AdwDialog *dialog = adw_preferences_dialog_new();
     data->dialog = dialog;
@@ -456,7 +509,7 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings) {
     DictMoveData *up_data = g_new(DictMoveData, 1);
     up_data->data = data;
     up_data->direction = -1;
-    up_data->id = NULL;
+    up_data->id = NULL; // id is read from data->selected_dict_id at click time
     g_signal_connect_data(data->move_up_btn, "clicked", G_CALLBACK(on_move_dictionary),
         up_data, (GClosureNotify)dict_move_data_free, 0);
     
@@ -466,7 +519,7 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings) {
     DictMoveData *down_data = g_new(DictMoveData, 1);
     down_data->data = data;
     down_data->direction = 1;
-    down_data->id = NULL;
+    down_data->id = NULL; // id is read from data->selected_dict_id at click time
     g_signal_connect_data(data->move_down_btn, "clicked", G_CALLBACK(on_move_dictionary),
         down_data, (GClosureNotify)dict_move_data_free, 0);
     
