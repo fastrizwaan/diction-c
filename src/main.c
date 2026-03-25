@@ -15,6 +15,8 @@ static AdwStyleManager *style_manager = NULL;
 static GtkSearchEntry *search_entry = NULL;
 static char *last_search_query = NULL;
 static AppSettings *app_settings = NULL;
+static GtkListBox *history_listbox = NULL;
+static GtkListBox *related_listbox = NULL;
 
 static void populate_dict_sidebar(void);      // forward declaration
 static void start_async_dict_loading(void);   // forward declaration
@@ -52,6 +54,31 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
     webkit_policy_decision_use(d);
 }
 
+static void on_history_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data);
+static void on_related_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data);
+
+static void on_history_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data) {
+    (void)box; (void)user_data;
+    if (!row) return;
+    GtkWidget *label = gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(row));
+    if (label && GTK_IS_LABEL(label)) {
+        const char *text = gtk_label_get_text(GTK_LABEL(label));
+        gtk_editable_set_text(GTK_EDITABLE(search_entry), text);
+    }
+    gtk_list_box_unselect_all(box);
+}
+
+static void on_related_selected(GtkListBox *box, GtkListBoxRow *row, gpointer user_data) {
+    (void)box; (void)user_data;
+    if (!row) return;
+    GtkWidget *label = gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(row));
+    if (label && GTK_IS_LABEL(label)) {
+        const char *text = gtk_label_get_text(GTK_LABEL(label));
+        gtk_editable_set_text(GTK_EDITABLE(search_entry), text);
+    }
+    gtk_list_box_unselect_all(box);
+}
+
 static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     (void)user_data;
     const char *query = gtk_editable_get_text(GTK_EDITABLE(entry));
@@ -60,6 +87,72 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
 
     g_free(last_search_query);
     last_search_query = g_strdup(query);
+
+    // Clear related listbox
+    if (related_listbox) {
+        GtkWidget *child;
+        while ((child = gtk_widget_get_first_child(GTK_WIDGET(related_listbox)))) {
+            gtk_list_box_remove(related_listbox, child);
+        }
+    }
+
+    if (strlen(query) > 0 && history_listbox) {
+        GtkListBoxRow *first_row = gtk_list_box_get_row_at_index(history_listbox, 0);
+        gboolean is_dup = FALSE;
+        if (first_row) {
+            GtkWidget *label = gtk_list_box_row_get_child(first_row);
+            if (label && GTK_IS_LABEL(label)) {
+                if (strcmp(gtk_label_get_text(GTK_LABEL(label)), query) == 0) {
+                    is_dup = TRUE;
+                }
+            }
+        }
+        if (!is_dup) {
+            GtkWidget *row = gtk_list_box_row_new();
+            GtkWidget *label = gtk_label_new(query);
+            gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+            gtk_widget_set_margin_start(label, 8);
+            gtk_widget_set_margin_end(label, 8);
+            gtk_widget_set_margin_top(label, 6);
+            gtk_widget_set_margin_bottom(label, 6);
+            gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+            gtk_list_box_prepend(history_listbox, row);
+        }
+    }
+
+    if (strlen(query) > 0 && related_listbox && all_dicts && all_dicts->dict && all_dicts->dict->index) {
+        // Just use the first loaded dictionary for suggestions
+        SplayTree *tree = all_dicts->dict->index;
+        SplayNode *res = splay_tree_search_first(tree, query);
+        SplayNode *start = res ? res : tree->root;
+        
+        if (start) {
+            size_t q_len = strlen(query);
+            size_t min_len = start->key_length < q_len ? start->key_length : q_len;
+            int cmp = strncasecmp(tree->mmap_data + start->key_offset, query, min_len);
+            if (cmp < 0 || (cmp == 0 && start->key_length < q_len)) {
+                start = splay_tree_successor(start);
+            }
+        }
+        
+        int rel_count = 0;
+        while (start && rel_count < 15) {
+            char *word = g_strndup(tree->mmap_data + start->key_offset, start->key_length);
+            GtkWidget *row = gtk_list_box_row_new();
+            GtkWidget *label = gtk_label_new(word);
+            gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+            gtk_widget_set_margin_start(label, 8);
+            gtk_widget_set_margin_end(label, 8);
+            gtk_widget_set_margin_top(label, 6);
+            gtk_widget_set_margin_bottom(label, 6);
+            gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+            gtk_list_box_append(related_listbox, row);
+            
+            g_free(word);
+            start = splay_tree_successor(start);
+            rel_count++;
+        }
+    }
 
     if (strlen(query) == 0) {
         webkit_web_view_load_html(web_view, "<h2>Diction</h2><p>Start typing to search...</p>", NULL);
@@ -189,7 +282,7 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
     }
 
     if (e && e->dict && e->dict->index->root) {
-        SplayNode *node = splay_tree_get_random(e->dict->index->root);
+        SplayNode *node = splay_tree_get_random(e->dict->index);
         if (node) {
             const char *word = e->dict->data + node->key_offset;
             size_t len = node->key_length;
@@ -464,53 +557,105 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     GtkWidget *main_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), main_box);
 
-    /* Header bar with search */
-    GtkWidget *header = adw_header_bar_new();
-    gtk_box_append(GTK_BOX(main_box), header);
+    AdwOverlaySplitView *split_view = ADW_OVERLAY_SPLIT_VIEW(adw_overlay_split_view_new());
+    gtk_widget_set_vexpand(GTK_WIDGET(split_view), TRUE);
+    gtk_box_append(GTK_BOX(main_box), GTK_WIDGET(split_view));
 
-    search_entry = GTK_SEARCH_ENTRY(gtk_search_entry_new());
-    gtk_widget_set_size_request(GTK_WIDGET(search_entry), 350, -1);
-    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(search_entry));
-    g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+    /* --- Sidebar --- */
+    GtkWidget *sidebar_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
-    /* Random button */
+    /* Sidebar Header */
+    GtkWidget *sidebar_header = adw_header_bar_new();
+    gtk_widget_add_css_class(sidebar_header, "flat");
+    GtkWidget *title_label = gtk_label_new("Diction");
+    gtk_widget_add_css_class(title_label, "title");
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(sidebar_header), title_label);
+
     GtkWidget *random_btn = gtk_button_new_from_icon_name("media-playlist-shuffle-symbolic");
     gtk_widget_add_css_class(random_btn, "flat");
     gtk_widget_set_tooltip_text(random_btn, "Random Headword");
     g_signal_connect(random_btn, "clicked", G_CALLBACK(on_random_clicked), NULL);
-    adw_header_bar_pack_start(ADW_HEADER_BAR(header), random_btn);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(sidebar_header), random_btn);
 
-    /* Settings button */
     GtkWidget *settings_btn = gtk_menu_button_new();
     gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(settings_btn), "open-menu-symbolic");
-
+    gtk_widget_add_css_class(settings_btn, "flat");
     GMenu *menu = g_menu_new();
     g_menu_append(menu, "Preferences", "app.settings");
     g_menu_append(menu, "About", "app.about");
     gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(settings_btn), G_MENU_MODEL(menu));
     g_object_unref(menu);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(sidebar_header), settings_btn);
 
-    adw_header_bar_pack_end(ADW_HEADER_BAR(header), settings_btn);
+    gtk_box_append(GTK_BOX(sidebar_vbox), sidebar_header);
 
-    /* Horizontal pane: sidebar | webview */
-    GtkWidget *paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_widget_set_vexpand(paned, TRUE);
-    gtk_box_append(GTK_BOX(main_box), paned);
+    /* Sidebar Stack */
+    AdwViewStack *sidebar_stack = ADW_VIEW_STACK(adw_view_stack_new());
+    gtk_widget_set_vexpand(GTK_WIDGET(sidebar_stack), TRUE);
 
-    /* Left: dictionary list */
-    GtkWidget *sidebar_scroll = gtk_scrolled_window_new();
-    gtk_widget_set_size_request(sidebar_scroll, 220, -1);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sidebar_scroll),
-                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    /* Search/Related Tab */
+    GtkWidget *related_scroll = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(related_scroll, TRUE);
+    gtk_widget_set_hexpand(related_scroll, TRUE);
+    related_listbox = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_widget_add_css_class(GTK_WIDGET(related_listbox), "navigation-sidebar");
+    gtk_list_box_set_selection_mode(related_listbox, GTK_SELECTION_SINGLE);
+    g_signal_connect(related_listbox, "row-selected", G_CALLBACK(on_related_selected), NULL);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(related_scroll), GTK_WIDGET(related_listbox));
+    adw_view_stack_add_titled_with_icon(sidebar_stack, related_scroll, "search", "Search", "system-search-symbolic");
 
+    /* Dictionaries Tab */
+    GtkWidget *dict_scroll = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(dict_scroll, TRUE);
+    gtk_widget_set_hexpand(dict_scroll, TRUE);
     dict_listbox = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_widget_add_css_class(GTK_WIDGET(dict_listbox), "navigation-sidebar");
     gtk_list_box_set_filter_func(dict_listbox, dict_list_filter_func, NULL, NULL);
     gtk_list_box_set_selection_mode(dict_listbox, GTK_SELECTION_SINGLE);
     g_signal_connect(dict_listbox, "row-selected", G_CALLBACK(on_dict_selected), NULL);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sidebar_scroll), GTK_WIDGET(dict_listbox));
-    gtk_paned_set_start_child(GTK_PANED(paned), sidebar_scroll);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(dict_scroll), GTK_WIDGET(dict_listbox));
+    adw_view_stack_add_titled_with_icon(sidebar_stack, dict_scroll, "dictionaries", "Dictionaries", "accessories-dictionary-symbolic");
 
-    /* Right: WebKit view */
+    /* History Tab */
+    GtkWidget *history_scroll = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(history_scroll, TRUE);
+    gtk_widget_set_hexpand(history_scroll, TRUE);
+    history_listbox = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_widget_add_css_class(GTK_WIDGET(history_listbox), "navigation-sidebar");
+    gtk_list_box_set_selection_mode(history_listbox, GTK_SELECTION_SINGLE);
+    g_signal_connect(history_listbox, "row-selected", G_CALLBACK(on_history_selected), NULL);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(history_scroll), GTK_WIDGET(history_listbox));
+    adw_view_stack_add_titled_with_icon(sidebar_stack, history_scroll, "history", "History", "document-open-recent-symbolic");
+
+    gtk_box_append(GTK_BOX(sidebar_vbox), GTK_WIDGET(sidebar_stack));
+
+    /* Sidebar View Switcher Bar */
+    GtkWidget *switcher_bar = adw_view_switcher_bar_new();
+    adw_view_switcher_bar_set_stack(ADW_VIEW_SWITCHER_BAR(switcher_bar), sidebar_stack);
+    adw_view_switcher_bar_set_reveal(ADW_VIEW_SWITCHER_BAR(switcher_bar), TRUE);
+    gtk_box_append(GTK_BOX(sidebar_vbox), switcher_bar);
+
+    adw_overlay_split_view_set_sidebar(ADW_OVERLAY_SPLIT_VIEW(split_view), sidebar_vbox);
+
+    /* --- Content --- */
+    AdwToolbarView *toolbar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
+    
+    GtkWidget *content_header = adw_header_bar_new();
+    gtk_widget_add_css_class(content_header, "content-header");
+    adw_toolbar_view_add_top_bar(toolbar_view, content_header);
+
+    /* Sidebar toggle */
+    GtkWidget *sidebar_toggle = gtk_toggle_button_new();
+    gtk_button_set_icon_name(GTK_BUTTON(sidebar_toggle), "sidebar-show-symbolic");
+    g_object_bind_property(split_view, "show-sidebar", sidebar_toggle, "active", G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(content_header), sidebar_toggle);
+
+    search_entry = GTK_SEARCH_ENTRY(gtk_search_entry_new());
+    gtk_widget_set_size_request(GTK_WIDGET(search_entry), 350, -1);
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(content_header), GTK_WIDGET(search_entry));
+    g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+
+    /* WebKit view */
     web_view = WEBKIT_WEB_VIEW(webkit_web_view_new());
 
     /* Handle internal dict:// links */
@@ -520,9 +665,9 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_vexpand(web_scroll, TRUE);
     gtk_widget_set_hexpand(web_scroll, TRUE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(web_scroll), GTK_WIDGET(web_view));
-    gtk_paned_set_end_child(GTK_PANED(paned), web_scroll);
-
-    gtk_paned_set_position(GTK_PANED(paned), 220);
+    
+    adw_toolbar_view_set_content(toolbar_view, web_scroll);
+    adw_overlay_split_view_set_content(ADW_OVERLAY_SPLIT_VIEW(split_view), GTK_WIDGET(toolbar_view));
 
     /* Populate sidebar */
     populate_dict_sidebar();
@@ -537,6 +682,19 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     // Initialize style manager for theme support
     style_manager = adw_style_manager_get_default();
     g_signal_connect(style_manager, "notify::dark", G_CALLBACK(on_theme_changed), NULL);
+
+    GtkCssProvider *css_provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(css_provider,
+        "viewswitcher > box { padding: 0; margin: 0; background: transparent; }"
+        "viewswitcher button { padding: 4px; margin: 0; min-height: 0; min-width: 0; }"
+        "viewswitcher button label { font-size: 0px; opacity: 0; margin: 0; padding: 0; }"
+        ".navigation-sidebar { background: transparent; }"
+        ".navigation-sidebar listitem:hover, .navigation-sidebar row:hover { background: alpha(@theme_fg_color, 0.05); }"
+        ".navigation-sidebar listitem:selected, .navigation-sidebar row:selected { background: alpha(@theme_fg_color, 0.1); color: inherit; }"
+        ".content-header { background: @window_bg_color; }"
+        ".menu-item { font-weight: normal; padding: 4px 8px; min-height: 0; }"
+    );
+    gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     // Apply saved theme preference
     if (app_settings && app_settings->theme) {

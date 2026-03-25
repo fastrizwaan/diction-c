@@ -16,6 +16,7 @@ typedef struct SplayTree {
     SplayNode *root;
     const char *mmap_data;
     size_t mmap_size;
+    size_t node_count;
 } SplayTree;
 
 SplayTree* splay_tree_new(const char *mmap_data, size_t mmap_size);
@@ -30,6 +31,6 @@ SplayNode* splay_tree_search_first(SplayTree *tree, const char *query);
 // Helper to iterate or get partial matches if needed
 SplayNode* splay_tree_min(SplayNode *node);
 SplayNode* splay_tree_successor(SplayNode *node);
-SplayNode* splay_tree_get_random(SplayNode *node);
+SplayNode* splay_tree_get_random(SplayTree *tree);
 
 void splay_tree_free(SplayTree *tree);

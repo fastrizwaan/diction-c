@@ -86,6 +86,7 @@ SplayTree* splay_tree_new(const char *mmap_data, size_t mmap_size) {
         tree->root = NULL;
         tree->mmap_data = mmap_data;
         tree->mmap_size = mmap_size;
+        tree->node_count = 0;
     }
     return tree;
 }
@@ -132,6 +133,7 @@ void splay_tree_insert(SplayTree *tree, size_t key_offset, size_t key_length, si
             y->right = z;
         }
     }
+    tree->node_count++;
     splay(tree, z);
 }
 
@@ -225,23 +227,25 @@ void splay_tree_free(SplayTree *tree) {
     }
 }
 
-SplayNode* splay_tree_get_random(SplayNode *node) {
-    if (!node) return NULL;
-    
-    SplayNode *curr = node;
-    // Simple random walk down the tree. 
-    // This is not perfectly uniform but better than nothing without size tracking.
-    while (1) {
-        int r = rand() % 3;
-        if (r == 0) return curr; // Pick this node
-        if (r == 1) {
-            if (curr->left) curr = curr->left;
-            else if (curr->right) curr = curr->right;
-            else return curr;
-        } else {
-            if (curr->right) curr = curr->right;
-            else if (curr->left) curr = curr->left;
-            else return curr;
-        }
+static void inorder_find(SplayNode *node, size_t *current, size_t target, SplayNode **result) {
+    if (!node || *result) return;
+    inorder_find(node->left, current, target, result);
+    if (*result) return;
+    if (*current == target) {
+        *result = node;
+        return;
     }
+    (*current)++;
+    inorder_find(node->right, current, target, result);
+}
+
+SplayNode* splay_tree_get_random(SplayTree *tree) {
+    if (!tree || !tree->root || tree->node_count == 0) return NULL;
+    
+    size_t target = rand() % tree->node_count;
+    size_t current = 0;
+    SplayNode *result = NULL;
+    
+    inorder_find(tree->root, &current, target, &result);
+    return result;
 }
