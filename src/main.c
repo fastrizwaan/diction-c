@@ -2,6 +2,7 @@
 #include <adwaita.h>
 #include <webkit/webkit.h>
 #include <sys/stat.h>
+#include <time.h>
 #include "dict-mmap.h"
 #include "dict-loader.h"
 #include "dict-render.h"
@@ -745,6 +746,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 int main(int argc, char *argv[]) {
     // Disable compositing to fix rendering issues
     setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 1);
+    // Seed random number generator
+    srand(time(NULL));
     // Load settings first
     app_settings = settings_load();
 
