@@ -63,6 +63,8 @@ static void populate_search_sidebar(const char *query);
 static void execute_search_now(void);
 static void activate_dictionary_entry(DictEntry *e);
 
+#define BUCKET_COUNT 8
+
 typedef struct {
     char *query;
     char *query_key;
@@ -73,6 +75,8 @@ typedef struct {
     SplayNode *current_node;
     gboolean list_started;
     guint source_id;
+    GPtrArray *global_bucket_labels[BUCKET_COUNT];
+    GPtrArray *global_bucket_payloads[BUCKET_COUNT];
 } SidebarSearchState;
 
 static SidebarSearchState *sidebar_search_state = NULL;
@@ -362,10 +366,12 @@ static char *normalize_headword_for_search(const char *value) {
 
 typedef enum {
     SEARCH_BUCKET_EXACT = 0,
-    SEARCH_BUCKET_SUFFIX,
+    SEARCH_BUCKET_SPACE_RIGHT,
+    SEARCH_BUCKET_SPACE_LEFT,
+    SEARCH_BUCKET_SPACE_BOTH,
     SEARCH_BUCKET_PREFIX,
-    SEARCH_BUCKET_PHRASE,
     SEARCH_BUCKET_SUBSTRING,
+    SEARCH_BUCKET_SUFFIX,
     SEARCH_BUCKET_FUZZY
 } SearchBucket;
 
@@ -450,26 +456,7 @@ static double fuzzy_similarity_score(const char *query_key, const char *candidat
     return 1.0 - ((double)distance / (double)longest);
 }
 
-static gboolean candidate_has_token_match(const char *candidate_key, const char *query_key) {
-    if (!candidate_key || !query_key || !*query_key) {
-        return FALSE;
-    }
 
-    gsize query_bytes = strlen(query_key);
-    const char *match = candidate_key;
-    while ((match = strstr(match, query_key)) != NULL) {
-        const char *before = g_utf8_find_prev_char(candidate_key, match);
-        const char *after = match + query_bytes;
-        gboolean before_ok = !before || !g_unichar_isalnum(g_utf8_get_char(before));
-        gboolean after_ok = !*after || !g_unichar_isalnum(g_utf8_get_char(after));
-        if (before_ok && after_ok) {
-            return TRUE;
-        }
-        match = g_utf8_next_char(match);
-    }
-
-    return FALSE;
-}
 
 static gboolean classify_search_candidate(const char *query_key,
                                           guint query_len,
@@ -480,50 +467,86 @@ static gboolean classify_search_candidate(const char *query_key,
         return FALSE;
     }
 
+    /* 1. EXACT */
     if (g_strcmp0(candidate_key, query_key) == 0) {
-        if (bucket_out) {
-            *bucket_out = SEARCH_BUCKET_EXACT;
-        }
-        if (fuzzy_score_out) {
-            *fuzzy_score_out = 1.0;
-        }
+        if (bucket_out) *bucket_out = SEARCH_BUCKET_EXACT;
+        if (fuzzy_score_out) *fuzzy_score_out = 1.0;
         return TRUE;
     }
 
-    if (g_str_has_suffix(candidate_key, query_key)) {
-        if (bucket_out) {
-            *bucket_out = SEARCH_BUCKET_SUFFIX;
+    gsize qlen = strlen(query_key);
+    const char *match = candidate_key;
+
+    while ((match = strstr(match, query_key)) != NULL) {
+        const char *before = (match > candidate_key)
+            ? g_utf8_prev_char(match)
+            : NULL;
+        const char *after  = match + qlen;
+
+        gboolean has_before = before != NULL;
+        gboolean has_after  = *after != '\0';
+
+        gboolean before_space = has_before && g_unichar_isspace(g_utf8_get_char(before));
+        gboolean after_space  = has_after  && g_unichar_isspace(g_utf8_get_char(after));
+
+        /* 2. SPACE RIGHT: "word " (e.g. "a day") */
+        if (!before_space && after_space) {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_RIGHT;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
         }
-        if (fuzzy_score_out) {
-            *fuzzy_score_out = 0.0;
+
+        /* 3. SPACE LEFT: " word" (e.g. "take a") */
+        if (before_space && !after_space) {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_LEFT;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
         }
-        return TRUE;
+
+        /* 4. SPACE BOTH: " word " (e.g. "take a break") */
+        if (before_space && after_space) {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_BOTH;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
+        }
+
+        match = g_utf8_next_char(match);
     }
 
+    /* 5. PREFIX (ONLY if NOT space-right) */
     if (g_str_has_prefix(candidate_key, query_key)) {
-        if (bucket_out) {
-            *bucket_out = SEARCH_BUCKET_PREFIX;
+        /* ensure not already matched as "word " */
+        if (candidate_key[qlen] != ' ') {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_PREFIX;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
         }
-        if (fuzzy_score_out) {
-            *fuzzy_score_out = 0.0;
-        }
-        return TRUE;
     }
 
+    /* 6. SUFFIX (ONLY if NOT space-left) */
+    if (g_str_has_suffix(candidate_key, query_key)) {
+        size_t len = strlen(candidate_key);
+        if (len > qlen && candidate_key[len - qlen - 1] != ' ') {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_SUFFIX;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
+        }
+    }
+
+    /* 7. SUBSTRING */
     if (strstr(candidate_key, query_key) != NULL) {
-        if (bucket_out) {
-            *bucket_out = candidate_has_token_match(candidate_key, query_key)
-                ? SEARCH_BUCKET_PHRASE
-                : SEARCH_BUCKET_SUBSTRING;
-        }
-        if (fuzzy_score_out) {
-            *fuzzy_score_out = 0.0;
-        }
+        if (bucket_out) *bucket_out = SEARCH_BUCKET_SUBSTRING;
+        if (fuzzy_score_out) *fuzzy_score_out = 0.0;
         return TRUE;
     }
 
+    /* 8. FUZZY (unchanged) */
     if (query_len < 3) {
         return FALSE;
+    }
+
+    if (query_len >= 3 && strlen(candidate_key) > 32) {
+        return FALSE; // skip expensive fuzzy early
     }
 
     guint candidate_len = utf8_length_or_bytes(candidate_key);
@@ -538,12 +561,8 @@ static gboolean classify_search_candidate(const char *query_key,
         return FALSE;
     }
 
-    if (bucket_out) {
-        *bucket_out = SEARCH_BUCKET_FUZZY;
-    }
-    if (fuzzy_score_out) {
-        *fuzzy_score_out = ratio;
-    }
+    if (bucket_out) *bucket_out = SEARCH_BUCKET_FUZZY;
+    if (fuzzy_score_out) *fuzzy_score_out = ratio;
     return TRUE;
 }
 
@@ -571,6 +590,13 @@ static void sidebar_search_state_free(SidebarSearchState *state) {
     g_free(state->query_key);
     if (state->seen_words) {
         g_hash_table_unref(state->seen_words);
+    }
+    for (int i = 0; i < BUCKET_COUNT; i++) {
+        if (state->global_bucket_labels[i])
+            g_ptr_array_free(state->global_bucket_labels[i], TRUE);
+        if (state->global_bucket_payloads[i]) {
+            g_ptr_array_free(state->global_bucket_payloads[i], TRUE);
+        }
     }
     g_free(state);
 }
@@ -840,6 +866,39 @@ static void populate_search_sidebar_status(const char *title, const char *subtit
     g_ptr_array_free(payloads, TRUE);
 }
 
+typedef struct {
+    char *label;
+    RelatedRowPayload *payload;
+} BucketItem;
+
+static gint compare_bucket_item(gconstpointer a, gconstpointer b, gpointer user_data) {
+    const BucketItem *ia = a;
+    const BucketItem *ib = b;
+
+    char *ka = g_utf8_casefold(ia->label, -1);
+    char *kb = g_utf8_casefold(ib->label, -1);
+
+    int r = g_strcmp0(ka, kb);
+
+    g_free(ka);
+    g_free(kb);
+    return r;
+}
+
+static gboolean fast_strncasestr(const char *haystack, size_t haystack_len, const char *needle) {
+    if (!haystack || !needle) return FALSE;
+    size_t needle_len = strlen(needle);
+    if (needle_len == 0) return TRUE;
+    if (needle_len > haystack_len) return FALSE;
+
+    for (size_t i = 0; i <= haystack_len - needle_len; i++) {
+        if (g_ascii_strncasecmp(haystack + i, needle, needle_len) == 0) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static gboolean continue_sidebar_search(gpointer user_data) {
     SidebarSearchState *state = user_data;
     if (!state || state != sidebar_search_state) {
@@ -847,19 +906,42 @@ static gboolean continue_sidebar_search(gpointer user_data) {
     }
 
     guint processed = 0;
-    const guint max_batch_size = 1200;
-    gint64 deadline_us = g_get_monotonic_time() + 6000;
-    GPtrArray *labels = g_ptr_array_new_with_free_func(g_free);
-    GPtrArray *payloads = g_ptr_array_new();
-
+    const guint max_batch_size = 512;
+    gint64 deadline_us = g_get_monotonic_time() + 2000;
     while (processed < max_batch_size && g_get_monotonic_time() < deadline_us) {
-        if (!state->current_entry) {
+        if (!state->current_entry && !state->current_node) {
+            // END OF SEARCH - DO GLOBAL SORT & FLUSH
+            for (int i = 0; i < BUCKET_COUNT; i++) {
+                guint n = state->global_bucket_labels[i]->len;
+                if (n > 1) {
+                    BucketItem *items = g_new(BucketItem, n);
+                    for (guint j = 0; j < n; j++) {
+                        items[j].label = g_ptr_array_index(state->global_bucket_labels[i], j);
+                        items[j].payload = g_ptr_array_index(state->global_bucket_payloads[i], j);
+                    }
+                    g_qsort_with_data(items, n, sizeof(BucketItem), compare_bucket_item, NULL);
+                    for (guint j = 0; j < n; j++) {
+                        g_ptr_array_index(state->global_bucket_labels[i], j) = items[j].label;
+                        g_ptr_array_index(state->global_bucket_payloads[i], j) = items[j].payload;
+                    }
+                    g_free(items);
+                }
+
+                if (n == 0) continue;
+
+                if (!state->list_started) {
+                    set_related_rows(state->global_bucket_labels[i], state->global_bucket_payloads[i]);
+                    state->list_started = TRUE;
+                } else {
+                    append_related_rows(state->global_bucket_labels[i], state->global_bucket_payloads[i]);
+                }
+            }
+
             if (!state->list_started &&
                 g_hash_table_size(state->seen_words) == 0) {
                 populate_search_sidebar_status("No results", NULL);
             }
-            g_ptr_array_free(labels, TRUE);
-            g_ptr_array_free(payloads, TRUE);
+
             state->source_id = 0;
             g_clear_pointer(&sidebar_search_state, sidebar_search_state_free);
             return G_SOURCE_REMOVE;
@@ -900,6 +982,16 @@ static gboolean continue_sidebar_search(gpointer user_data) {
         SplayNode *node = state->current_node;
         state->current_node = splay_tree_successor(node);
 
+        // 🔥 FAST PRE-FILTER (zero alloc, length-safe)
+        if (!fast_strncasestr(state->current_dict->dict->data + node->key_offset, node->key_length, state->query)) {
+            processed++;
+            if ((processed & 63) == 0) {
+                if (g_get_monotonic_time() > deadline_us)
+                    break;
+            }
+            continue;
+        }
+
         char *word = g_strndup(state->current_dict->dict->data + node->key_offset, node->key_length);
         char *clean_word = normalize_headword_for_search(word);
         if (!clean_word || text_has_replacement_char(clean_word)) {
@@ -917,10 +1009,46 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             if (!g_hash_table_contains(state->seen_words, word_key)) {
                 RelatedRowPayload *payload = g_new0(RelatedRowPayload, 1);
                 payload->type = RELATED_ROW_CANDIDATE;
-                payload->word = g_strdup(clean_word);
+                payload->word = clean_word; // Steal pointer
                 g_hash_table_add(state->seen_words, g_strdup(word_key));
-                g_ptr_array_add(labels, g_strdup(clean_word));
-                g_ptr_array_add(payloads, payload);
+                
+                int b = (int)bucket;
+                if (b >= 0 && b < BUCKET_COUNT) {
+                    g_ptr_array_add(state->global_bucket_labels[b], clean_word); // Uses the same stolen string pointer
+                    g_ptr_array_add(state->global_bucket_payloads[b], payload);
+                    clean_word = NULL;
+
+                    // 🔥 PROGRESSIVE FLUSH (per bucket)
+                    if ((state->global_bucket_labels[b]->len & 31) == 0) {
+                        guint n = state->global_bucket_labels[b]->len;
+                        if (n > 1) {
+                            BucketItem *items = g_new(BucketItem, n);
+                            for (guint j = 0; j < n; j++) {
+                                items[j].label = g_ptr_array_index(state->global_bucket_labels[b], j);
+                                items[j].payload = g_ptr_array_index(state->global_bucket_payloads[b], j);
+                            }
+
+                            g_sort_array(items, n, sizeof(BucketItem), compare_bucket_item, NULL);
+
+                            for (guint j = 0; j < n; j++) {
+                                g_ptr_array_index(state->global_bucket_labels[b], j) = items[j].label;
+                                g_ptr_array_index(state->global_bucket_payloads[b], j) = items[j].payload;
+                            }
+                            g_free(items);
+                        }
+
+                        if (!state->list_started) {
+                            set_related_rows(state->global_bucket_labels[b], state->global_bucket_payloads[b]);
+                            state->list_started = TRUE;
+                        } else {
+                            append_related_rows(state->global_bucket_labels[b], state->global_bucket_payloads[b]);
+                        }
+
+                        // clear bucket after flush without freeing strings
+                        g_ptr_array_set_size(state->global_bucket_labels[b], 0);
+                        g_ptr_array_set_size(state->global_bucket_payloads[b], 0);
+                    }
+                }
             }
         }
 
@@ -929,35 +1057,28 @@ static gboolean continue_sidebar_search(gpointer user_data) {
         }
 
         g_free(word);
-        g_free(clean_word);
+        if (clean_word) {
+            g_free(clean_word);
+        }
         g_free(word_key);
         processed++;
-    }
 
-    if (labels->len > 0) {
-        if (!state->list_started) {
-            set_related_rows(labels, payloads);
-            state->list_started = TRUE;
-        } else {
-            append_related_rows(labels, payloads);
+        if ((processed & 63) == 0) {
+            if (g_get_monotonic_time() > deadline_us)
+                break;
         }
     }
-    g_ptr_array_free(labels, TRUE);
-    g_ptr_array_free(payloads, TRUE);
 
     return G_SOURCE_CONTINUE;
 }
 
-static guint seed_search_sidebar_exact_rows(SidebarSearchState *state) {
-    if (!state || !state->query || !state->query_key) {
-        return 0;
-    }
+static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
+    if (!state || !state->query || !state->query_key) return 0;
 
-    GPtrArray *labels = g_ptr_array_new_with_free_func(g_free);
+    GPtrArray *labels = g_ptr_array_new();
     GPtrArray *payloads = g_ptr_array_new();
-    const guint max_seed_rows = 48;
+    const guint max_seed_rows = 10000;
     guint added = 0;
-    size_t q_len = strlen(state->query);
 
     for (DictEntry *entry = all_dicts; entry && added < max_seed_rows; entry = entry->next) {
         if (!entry->dict || !entry->dict->index || !dict_entry_in_active_scope(entry)) {
@@ -967,32 +1088,42 @@ static guint seed_search_sidebar_exact_rows(SidebarSearchState *state) {
         for (SplayNode *node = splay_tree_search_first(entry->dict->index, state->query);
              node && added < max_seed_rows;
              node = splay_tree_successor(node)) {
-            if (node->key_length != q_len ||
-                strncasecmp(entry->dict->data + node->key_offset, state->query, q_len) != 0) {
-                break;
-            }
 
             char *raw_word = g_strndup(entry->dict->data + node->key_offset, node->key_length);
             char *clean_word = normalize_headword_for_search(raw_word);
             g_free(raw_word);
+
             if (!clean_word || text_has_replacement_char(clean_word)) {
-                g_free(clean_word);
+                if (clean_word) g_free(clean_word);
                 continue;
             }
 
             char *word_key = g_utf8_casefold(clean_word, -1);
-            if (!g_hash_table_contains(state->seen_words, word_key)) {
-                RelatedRowPayload *payload = g_new0(RelatedRowPayload, 1);
-                payload->type = RELATED_ROW_CANDIDATE;
-                payload->word = g_strdup(clean_word);
-                g_hash_table_add(state->seen_words, g_strdup(word_key));
-                g_ptr_array_add(labels, g_strdup(clean_word));
-                g_ptr_array_add(payloads, payload);
-                added++;
+            SearchBucket bucket;
+            double score;
+
+            if (classify_search_candidate(state->query_key, state->query_len, word_key, &bucket, &score)) {
+                if (bucket <= SEARCH_BUCKET_SPACE_BOTH) {
+                    if (!g_hash_table_contains(state->seen_words, word_key)) {
+                        RelatedRowPayload *payload = g_new0(RelatedRowPayload, 1);
+                        payload->type = RELATED_ROW_CANDIDATE;
+                        payload->word = clean_word; 
+
+                        g_hash_table_add(state->seen_words, g_strdup(word_key));
+                        g_ptr_array_add(labels, clean_word);
+                        g_ptr_array_add(payloads, payload);
+                        added++;
+                        clean_word = NULL;
+                    }
+                } else {
+                    g_free(word_key);
+                    if (clean_word) g_free(clean_word);
+                    break;
+                }
             }
 
+            if (clean_word) g_free(clean_word);
             g_free(word_key);
-            g_free(clean_word);
         }
     }
 
@@ -1003,6 +1134,7 @@ static guint seed_search_sidebar_exact_rows(SidebarSearchState *state) {
 
     g_ptr_array_free(labels, TRUE);
     g_ptr_array_free(payloads, TRUE);
+
     return added;
 }
 
@@ -1024,11 +1156,16 @@ static void populate_search_sidebar(const char *query) {
         g_str_hash, g_str_equal, g_free, NULL);
     sidebar_search_state->current_entry = all_dicts;
 
-    if (seed_search_sidebar_exact_rows(sidebar_search_state) == 0) {
+    for (int i = 0; i < BUCKET_COUNT; i++) {
+        sidebar_search_state->global_bucket_labels[i] = g_ptr_array_new();
+        sidebar_search_state->global_bucket_payloads[i] = g_ptr_array_new();
+    }
+
+    if (seed_search_sidebar_fast_rows(sidebar_search_state) == 0) {
         populate_search_sidebar_status("Searching…", NULL);
     }
     sidebar_search_state->source_id = g_idle_add_full(
-        G_PRIORITY_LOW, continue_sidebar_search, sidebar_search_state, NULL);
+        G_PRIORITY_DEFAULT_IDLE, continue_sidebar_search, sidebar_search_state, NULL);
 }
 
 static void update_favorites_word(const char *word, gboolean add) {
@@ -1634,32 +1771,20 @@ static void execute_search_now(void) {
         if (!e->dict || !dict_entry_in_active_scope(e)) continue;
 
         SplayNode *res = splay_tree_search_first(e->dict->index, query);
-        size_t q_len = strlen(query);
         int dict_header_shown = 0;
-        gboolean have_raw_exact = FALSE;
 
         while (res != NULL) {
-            // Check if this node is still a match (case-insensitive and same length)
-            if (res->key_length != q_len || 
-                strncasecmp(e->dict->data + res->key_offset, query, q_len) != 0) {
+            char *raw_word = g_strndup(e->dict->data + res->key_offset, res->key_length);
+            gboolean matches = headword_matches_normalized_query(raw_word, query_key);
+            g_free(raw_word);
+
+            if (!matches) {
                 break;
             }
-            have_raw_exact = TRUE;
+            
             append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             
             res = splay_tree_successor(res);
-        }
-
-        if (!have_raw_exact) {
-            for (SplayNode *node = splay_tree_min(e->dict->index->root); node; node = splay_tree_successor(node)) {
-                char *raw_word = g_strndup(e->dict->data + node->key_offset, node->key_length);
-                gboolean matches = headword_matches_normalized_query(raw_word, query_key);
-                g_free(raw_word);
-                if (!matches) {
-                    continue;
-                }
-                append_rendered_entry_html(html_res, e, node, dict_idx, &dict_header_shown, &found_count);
-            }
         }
 
         dict_idx++;
