@@ -1,0 +1,7 @@
+groups: when we click on a dictionary group, then searching and random word should come from teh selected dictionary group only not from all dictionaries.
+
+create language pair based groups. say English->English, English->Hindi, Hindi->Hindi, Arabic->English, Hebrew->Japanese, Chinese->Korean; and if we have multi language dict then Chinese<->English, English<->Hindi, English<->Arabic.
+
+1. create setup and install system meson build etc. which installs icon, etc. use the icon and desktop file from diction/data
+
+2. Just like diction/src/diction/main.py clicking on a search result should append the result on the top and it should not behave as if we searched entry field and do not remove search results when we click a search result. Also on appending, when existing is appended, scroll to that instead of adding same result to the exsting page(webview). Only on searching from search entry should the search results should change.

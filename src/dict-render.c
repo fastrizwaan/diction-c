@@ -1452,6 +1452,51 @@ static char *finalize_placeholder_dict_links(char *html) {
     return g_string_free(out, FALSE);
 }
 
+#define MAX_ACTIVE_TAGS 32
+typedef struct {
+    char name[16];
+    char start_html[128];
+    char end_html[16];
+} ActiveTag;
+
+static void push_tag(StrBuf *b, const char *name, const char *start_html, const char *end_html, ActiveTag *active_tags, int *num_active_tags) {
+    if (*num_active_tags < MAX_ACTIVE_TAGS) {
+        ActiveTag *tag = &active_tags[*num_active_tags];
+        strncpy(tag->name, name, sizeof(tag->name) - 1);
+        tag->name[sizeof(tag->name) - 1] = '\0';
+        strncpy(tag->start_html, start_html, sizeof(tag->start_html) - 1);
+        tag->start_html[sizeof(tag->start_html) - 1] = '\0';
+        strncpy(tag->end_html, end_html, sizeof(tag->end_html) - 1);
+        tag->end_html[sizeof(tag->end_html) - 1] = '\0';
+        (*num_active_tags)++;
+    }
+    buf_append_str(b, start_html);
+}
+
+static void close_tag(StrBuf *b, const char *name, ActiveTag *active_tags, int *num_active_tags) {
+    int found_idx = -1;
+    for (int i = *num_active_tags - 1; i >= 0; i--) {
+        if (strcmp(active_tags[i].name, name) == 0) {
+            found_idx = i;
+            break;
+        }
+    }
+    
+    if (found_idx != -1) {
+        for (int i = *num_active_tags - 1; i >= found_idx; i--) {
+            buf_append_str(b, active_tags[i].end_html);
+        }
+        
+        for (int i = found_idx + 1; i < *num_active_tags; i++) {
+            buf_append_str(b, active_tags[i].start_html);
+            if (i > found_idx) {
+                active_tags[i - 1] = active_tags[i];
+            }
+        }
+        (*num_active_tags)--;
+    }
+}
+
 char* dsl_render_to_html(const char *dsl_text,
                          size_t length,
                          const char *headword,
@@ -1515,7 +1560,8 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, ";}"
         ".pos{color: ");
     buf_append_str(&b, pos_color);
-    buf_append_str(&b, "; font-style: bold;}"
+    buf_append_str(&b, "; font-style: italic; font-weight: normal;}\n"
+        ".pos .trn, .trn .pos{color: inherit; font-style: inherit;}\n"
         ".translit{color: ");
     buf_append_str(&b, translit_color);
     buf_append_str(&b, "; font-style: italic;}"
@@ -1740,6 +1786,8 @@ char* dsl_render_to_html(const char *dsl_text,
     int in_media = 0;
     int m_open = 0;
     GString *media_buf = g_string_new("");
+    ActiveTag active_tags[MAX_ACTIVE_TAGS];
+    int num_active_tags = 0;
     
     while (i < length) {
         // Strip out {{ macros }} entirely
@@ -1804,8 +1852,6 @@ char* dsl_render_to_html(const char *dsl_text,
                  // Handle color tags like [c darkblue]
                  if (tag_len > 2 && tag[0] == 'c' && tag[1] == ' ') {
                      if (!in_media) {
-                         buf_append_str(&b, "<span style='color:");
-
                          // Extract color name/value
                          char color_name[64];
                          size_t color_len = tag_len - 2;
@@ -1814,8 +1860,9 @@ char* dsl_render_to_html(const char *dsl_text,
                          color_name[color_len] = '\0';
 
                          char *final_color = adjust_color_value_for_theme(color_name, dark_mode, FALSE);
-                         buf_append_str(&b, final_color);
-                         buf_append_str(&b, "'>");
+                         char start_html[128];
+                         snprintf(start_html, sizeof(start_html), "<span style='color:%s'>", final_color);
+                         push_tag(&b, "c", start_html, "</span>", active_tags, &num_active_tags);
                          g_free(final_color);
                      }
                  }
@@ -1823,7 +1870,7 @@ char* dsl_render_to_html(const char *dsl_text,
                      /* Bare [c] appears in some BGL content as a no-op marker. */
                  }
                  else if (tag_len == 2 && strncmp(tag, "/c", 2) == 0) {
-                     if (!in_media) buf_append_str(&b, "</span>");
+                     if (!in_media) close_tag(&b, "c", active_tags, &num_active_tags);
                  }
                  else if ((tag_len == 4 && strncmp(tag, "lang", 4) == 0) ||
                           (tag_len > 4 && strncmp(tag, "lang", 4) == 0 && isspace((unsigned char)tag[4]))) {
@@ -1884,43 +1931,43 @@ char* dsl_render_to_html(const char *dsl_text,
                  else if (tag_len == 1 && tag[0] == 't') {
                      const char *t_color = dark_mode ? "#9ae59a" : "#1e8e3e";
                      if (!in_media) {
-                         buf_append_str(&b, "<span style='color: ");
-                         buf_append_str(&b, t_color);
-                         buf_append_str(&b, "; font-family: sans-serif;'>");
+                         char start_html[128];
+                         snprintf(start_html, sizeof(start_html), "<span style='color: %s; font-family: sans-serif;'>", t_color);
+                         push_tag(&b, "t", start_html, "</span>", active_tags, &num_active_tags);
                      }
                  }
                  else if (tag_len == 2 && tag[0] == '/' && tag[1] == 't') {
-                     if (!in_media) buf_append_str(&b, "</span>");
+                     if (!in_media) close_tag(&b, "t", active_tags, &num_active_tags);
                  }
                  
                  // Basics
-                 else if (tag_len == 1 && tag[0] == 'b') { if(!in_media) buf_append_str(&b, "<b>"); }
-                 else if (tag_len == 2 && strncmp(tag, "/b", 2) == 0) { if(!in_media) buf_append_str(&b, "</b>"); }
-                 else if (tag_len == 1 && tag[0] == 'i') { if(!in_media) buf_append_str(&b, "<i>"); }
-                 else if (tag_len == 2 && strncmp(tag, "/i", 2) == 0) { if(!in_media) buf_append_str(&b, "</i>"); }
-                 else if (tag_len == 1 && tag[0] == 'u') { if(!in_media) buf_append_str(&b, "<u>"); }
-                 else if (tag_len == 2 && strncmp(tag, "/u", 2) == 0) { if(!in_media) buf_append_str(&b, "</u>"); }
+                 else if (tag_len == 1 && tag[0] == 'b') { if(!in_media) push_tag(&b, "b", "<b>", "</b>", active_tags, &num_active_tags); }
+                 else if (tag_len == 2 && strncmp(tag, "/b", 2) == 0) { if(!in_media) close_tag(&b, "b", active_tags, &num_active_tags); }
+                 else if (tag_len == 1 && tag[0] == 'i') { if(!in_media) push_tag(&b, "i", "<i>", "</i>", active_tags, &num_active_tags); }
+                 else if (tag_len == 2 && strncmp(tag, "/i", 2) == 0) { if(!in_media) close_tag(&b, "i", active_tags, &num_active_tags); }
+                 else if (tag_len == 1 && tag[0] == 'u') { if(!in_media) push_tag(&b, "u", "<u>", "</u>", active_tags, &num_active_tags); }
+                 else if (tag_len == 2 && strncmp(tag, "/u", 2) == 0) { if(!in_media) close_tag(&b, "u", active_tags, &num_active_tags); }
                  
                  // Superscript/Subscript
-                 else if (tag_len == 3 && strncmp(tag, "sup", 3) == 0) { if(!in_media) buf_append_str(&b, "<sup>"); }
-                 else if (tag_len == 4 && strncmp(tag, "/sup", 4) == 0) { if(!in_media) buf_append_str(&b, "</sup>"); }
-                 else if (tag_len == 3 && strncmp(tag, "sub", 3) == 0) { if(!in_media) buf_append_str(&b, "<sub>"); }
-                 else if (tag_len == 4 && strncmp(tag, "/sub", 4) == 0) { if(!in_media) buf_append_str(&b, "</sub>"); }
+                 else if (tag_len == 3 && strncmp(tag, "sup", 3) == 0) { if(!in_media) push_tag(&b, "sup", "<sup>", "</sup>", active_tags, &num_active_tags); }
+                 else if (tag_len == 4 && strncmp(tag, "/sup", 4) == 0) { if(!in_media) close_tag(&b, "sup", active_tags, &num_active_tags); }
+                 else if (tag_len == 3 && strncmp(tag, "sub", 3) == 0) { if(!in_media) push_tag(&b, "sub", "<sub>", "</sub>", active_tags, &num_active_tags); }
+                 else if (tag_len == 4 && strncmp(tag, "/sub", 4) == 0) { if(!in_media) close_tag(&b, "sub", active_tags, &num_active_tags); }
                  
                  // Bullet/list marker [*] is treated as structural, not visible text.
                  else if (tag_len == 1 && tag[0] == '*') { /* no-op */ }
                  else if (tag_len == 2 && strncmp(tag, "/*", 2) == 0) { /* ignore */ }
                  
-                 else if (tag_len == 1 && tag[0] == 'p') { if(!in_media) buf_append_str(&b, "<span class='pos'>"); }
-                 else if (tag_len == 2 && strncmp(tag, "/p", 2) == 0) { if(!in_media) buf_append_str(&b, "</span>"); }
-                 else if (tag_len == 3 && strncmp(tag, "trn", 3) == 0) { if(!in_media) buf_append_str(&b, "<span class='trn'>"); }
-                 else if (tag_len == 4 && strncmp(tag, "/trn", 4) == 0) { if(!in_media) buf_append_str(&b, "</span>"); }
+                 else if (tag_len == 1 && tag[0] == 'p') { if(!in_media) push_tag(&b, "p", "<span class='pos'>", "</span>", active_tags, &num_active_tags); }
+                 else if (tag_len == 2 && strncmp(tag, "/p", 2) == 0) { if(!in_media) close_tag(&b, "p", active_tags, &num_active_tags); }
+                 else if (tag_len == 3 && strncmp(tag, "trn", 3) == 0) { if(!in_media) push_tag(&b, "trn", "<span class='trn'>", "</span>", active_tags, &num_active_tags); }
+                 else if (tag_len == 4 && strncmp(tag, "/trn", 4) == 0) { if(!in_media) close_tag(&b, "trn", active_tags, &num_active_tags); }
                  else if (tag_len == 4 && strncmp(tag, "!trs", 4) == 0) { /* no-op */ }
                  else if (tag_len == 5 && strncmp(tag, "/!trs", 5) == 0) { /* no-op */ }
-                 else if (tag_len == 2 && strncmp(tag, "ex", 2) == 0) { if(!in_media) buf_append_str(&b, "<span class='ex'>"); }
-                 else if (tag_len == 3 && strncmp(tag, "/ex", 3) == 0) { if(!in_media) buf_append_str(&b, "</span>"); }
-                 else if (tag_len == 3 && strncmp(tag, "com", 3) == 0) { if(!in_media) buf_append_str(&b, "<span class='com'>"); }
-                 else if (tag_len == 4 && strncmp(tag, "/com", 4) == 0) { if(!in_media) buf_append_str(&b, "</span>"); }
+                 else if (tag_len == 2 && strncmp(tag, "ex", 2) == 0) { if(!in_media) push_tag(&b, "ex", "<span class='ex'>", "</span>", active_tags, &num_active_tags); }
+                 else if (tag_len == 3 && strncmp(tag, "/ex", 3) == 0) { if(!in_media) close_tag(&b, "ex", active_tags, &num_active_tags); }
+                 else if (tag_len == 3 && strncmp(tag, "com", 3) == 0) { if(!in_media) push_tag(&b, "com", "<span class='com'>", "</span>", active_tags, &num_active_tags); }
+                 else if (tag_len == 4 && strncmp(tag, "/com", 4) == 0) { if(!in_media) close_tag(&b, "com", active_tags, &num_active_tags); }
                  
                  else {
                      // Potential transcription if unknown tag with no space (e.g. [frait])
