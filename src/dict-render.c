@@ -78,6 +78,7 @@ static const char* get_dark_mode_color(const char *color_name) {
         {"darkslategrey", "#8fc9cf"},
         {"dimgray", "#d8d8d8"},
         {"dimgrey", "#d8d8d8"},
+        {"silver", "#c8c8c8"},
         {NULL, NULL}
     };
     char *normalized = normalize_color_name_key(color_name);
@@ -1473,15 +1474,15 @@ char* dsl_render_to_html(const char *dsl_text,
     }
 
     // Theme colors based on Python Diction's _build_theme_css
-    const char *body_color = dark_mode ? "#dddddd" : "#222222";
+    const char *body_color = dark_mode ? "#1e1e22" : "#222222";
     const char *bg_color = dark_mode ? "#1e1e1e" : "#ffffff";
-    const char *link_color = dark_mode ? "#89b4ff" : "#005bbb";
-    const char *trn_color = dark_mode ? "#89b4ff" : "#1a73e8";
-    const char *ex_color = dark_mode ? "#9ae59a" : "#5f6368";
-    const char *com_color = dark_mode ? "#9ae59a" : "#006600";
-    const char *pos_color = dark_mode ? "#9ae59a" : "#c90016";
+    const char *link_color = dark_mode ? "#6cb6ff" : "#005bbb";
+    const char *trn_color = dark_mode ? "#e6e6e6" : "#1e1e1e";
+    const char *ex_color = dark_mode ? "#95bf77" : "#76a150";
+    const char *com_color = dark_mode ? "#b9b9b9" : "#b9b9b9";
+    const char *pos_color = dark_mode ? "#e06c75" : "#d2691e"; // ff9aa2
     const char *translit_color = dark_mode ? "#888888" : "#808080";
-    const char *heading_color = dark_mode ? "#89b4ff" : "#0b5394";
+    const char *heading_color = dark_mode ? "#60acea" : "#005bbb";
     const char *border_color = dark_mode ? "#444444" : "#cccccc";
 
     // Add GoldenDict-like styling with theme-aware colors
@@ -1514,7 +1515,7 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, ";}"
         ".pos{color: ");
     buf_append_str(&b, pos_color);
-    buf_append_str(&b, "; font-weight: bold;}"
+    buf_append_str(&b, "; font-style: bold;}"
         ".translit{color: ");
     buf_append_str(&b, translit_color);
     buf_append_str(&b, "; font-style: italic;}"
