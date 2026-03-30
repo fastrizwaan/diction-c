@@ -1519,15 +1519,15 @@ char* dsl_render_to_html(const char *dsl_text,
     }
 
     // Theme colors based on Python Diction's _build_theme_css
-    const char *body_color = dark_mode ? "#e6e6e6" : "#222222";
+    const char *body_color = dark_mode ? "#e0e0e0" : "#222222";
     const char *bg_color = dark_mode ? "#1e1e1e" : "#ffffff";
-    const char *link_color = dark_mode ? "#6cb6ff" : "#005bbb";
+    const char *link_color = dark_mode ? "#7fb0e0" : "#005bbb";
     const char *trn_color = dark_mode ? "#e6e6e6" : "#1e1e1e";
     const char *ex_color = dark_mode ? "#95bf77" : "#76a150";
-    const char *com_color = dark_mode ? "#e6e6e6" : "#222222";
-    const char *pos_color = dark_mode ? "#fdc36a" : "#e45649"; 
+    const char *com_color = dark_mode ? "#e0e0e0" : "#222222";
+    const char *pos_color = dark_mode ? "#e0b07f" : "#e45649"; 
     const char *translit_color = dark_mode ? "#888888" : "#808080";
-    const char *heading_color = dark_mode ? "#e6e6e6" : "#222222";
+    const char *heading_color = dark_mode ? "#e0e0e0" : "#222222";
     const char *border_color = dark_mode ? "#444444" : "#cccccc";
 
     // Add GoldenDict-like styling with theme-aware colors
