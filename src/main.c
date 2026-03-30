@@ -366,10 +366,10 @@ static char *normalize_headword_for_search(const char *value) {
 
 typedef enum {
     SEARCH_BUCKET_EXACT = 0,
+    SEARCH_BUCKET_PREFIX,
     SEARCH_BUCKET_SPACE_RIGHT,
     SEARCH_BUCKET_SPACE_LEFT,
     SEARCH_BUCKET_SPACE_BOTH,
-    SEARCH_BUCKET_PREFIX,
     SEARCH_BUCKET_SUBSTRING,
     SEARCH_BUCKET_SUFFIX,
     SEARCH_BUCKET_FUZZY
@@ -475,6 +475,17 @@ static gboolean classify_search_candidate(const char *query_key,
     }
 
     gsize qlen = strlen(query_key);
+
+    /* 2. PREFIX (ONLY if NOT space-right) */
+    if (g_str_has_prefix(candidate_key, query_key)) {
+        /* ensure not already matched as "word " */
+        if (candidate_key[qlen] != ' ') {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_PREFIX;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
+        }
+    }
+
     const char *match = candidate_key;
 
     while ((match = strstr(match, query_key)) != NULL) {
@@ -489,21 +500,21 @@ static gboolean classify_search_candidate(const char *query_key,
         gboolean before_space = has_before && g_unichar_isspace(g_utf8_get_char(before));
         gboolean after_space  = has_after  && g_unichar_isspace(g_utf8_get_char(after));
 
-        /* 2. SPACE RIGHT: "word " (e.g. "a day") */
+        /* 3. SPACE RIGHT: "word " (e.g. "a day") */
         if (!before_space && after_space) {
             if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_RIGHT;
             if (fuzzy_score_out) *fuzzy_score_out = 0.0;
             return TRUE;
         }
 
-        /* 3. SPACE LEFT: " word" (e.g. "take a") */
+        /* 4. SPACE LEFT: " word" (e.g. "take a") */
         if (before_space && !after_space) {
             if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_LEFT;
             if (fuzzy_score_out) *fuzzy_score_out = 0.0;
             return TRUE;
         }
 
-        /* 4. SPACE BOTH: " word " (e.g. "take a break") */
+        /* 5. SPACE BOTH: " word " (e.g. "take a break") */
         if (before_space && after_space) {
             if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_BOTH;
             if (fuzzy_score_out) *fuzzy_score_out = 0.0;
@@ -511,16 +522,6 @@ static gboolean classify_search_candidate(const char *query_key,
         }
 
         match = g_utf8_next_char(match);
-    }
-
-    /* 5. PREFIX (ONLY if NOT space-right) */
-    if (g_str_has_prefix(candidate_key, query_key)) {
-        /* ensure not already matched as "word " */
-        if (candidate_key[qlen] != ' ') {
-            if (bucket_out) *bucket_out = SEARCH_BUCKET_PREFIX;
-            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
-            return TRUE;
-        }
     }
 
     /* 6. SUFFIX (ONLY if NOT space-left) */
