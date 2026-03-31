@@ -14,4 +14,5 @@ char* dsl_render_to_html(const char *dsl_text,
                          const char *resource_dir,
                          const char *source_dir,
                          const char *mdx_stylesheet,
-                         int dark_mode);
+                         int dark_mode,
+                         const char *theme_name);

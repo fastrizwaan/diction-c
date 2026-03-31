@@ -1699,7 +1699,8 @@ static void append_rendered_entry_html(GString *html_res,
     char *rendered = dsl_render_to_html(
         def_ptr, def_len,
         entry->dict->data + res->key_offset, res->key_length,
-        entry->format, entry->dict->resource_dir, entry->dict->source_dir, entry->dict->mdx_stylesheet, dark_mode);
+        entry->format, entry->dict->resource_dir, entry->dict->source_dir, entry->dict->mdx_stylesheet, dark_mode,
+        app_settings ? app_settings->color_theme : "default");
     if (!rendered) {
         return;
     }
@@ -2007,6 +2008,19 @@ static void on_theme_changed(AdwStyleManager *manager, GParamSpec *pspec, gpoint
     refresh_search_results();
 }
 
+/* Called whenever font family or size changes in the Appearance tab */
+static void apply_font_to_webview(void *user_data) {
+    (void)user_data;
+    if (!web_view || !app_settings) return;
+    WebKitSettings *ws = webkit_web_view_get_settings(web_view);
+    if (app_settings->font_family && *app_settings->font_family)
+        webkit_settings_set_default_font_family(ws, app_settings->font_family);
+    if (app_settings->font_size > 0)
+        webkit_settings_set_default_font_size(ws, (guint32)app_settings->font_size);
+    /* Refresh rendered content so HTML re-flows with new font */
+    refresh_search_results();
+}
+
 static void reload_dictionaries_from_settings(void *user_data) {
     (void)user_data;
     if (search_execute_source_id != 0) {
@@ -2047,6 +2061,7 @@ static void show_settings_dialog(GSimpleAction *action, GVariant *parameter, gpo
     if (window) {
         GtkWidget *dialog = settings_dialog_new(window, app_settings, style_manager,
             reload_dictionaries_from_settings, NULL);
+        settings_dialog_set_font_callback(dialog, apply_font_to_webview, NULL);
         adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(window));
     }
 }
@@ -2468,6 +2483,14 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     webkit_settings_set_auto_load_images(web_settings, TRUE);
     webkit_settings_set_allow_file_access_from_file_urls(web_settings, TRUE);
     webkit_settings_set_allow_universal_access_from_file_urls(web_settings, TRUE);
+
+    /* Apply saved font preferences */
+    if (app_settings) {
+        if (app_settings->font_family && *app_settings->font_family)
+            webkit_settings_set_default_font_family(web_settings, app_settings->font_family);
+        if (app_settings->font_size > 0)
+            webkit_settings_set_default_font_size(web_settings, (guint32)app_settings->font_size);
+    }
 
     /* Handle internal dict:// links */
     g_signal_connect(web_view, "decide-policy", G_CALLBACK(on_decide_policy), search_entry);

@@ -26,6 +26,9 @@ typedef struct {
     GPtrArray *dictionary_dirs;   // Array of char* (paths)
     GPtrArray *dictionary_groups; // Array of DictGroup*
     char *theme;                  // "system", "light", "dark"
+    char *font_family;            // e.g. "sans-serif"
+    int   font_size;              // e.g. 16 (CSS px)
+    char *color_theme;            // e.g. "default", "solarized", "dracula"
 } AppSettings;
 
 // Settings management
@@ -37,6 +40,8 @@ void settings_free(AppSettings *settings);
 GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
                                AdwStyleManager *style_manager,
                                void (*reload_callback)(void *), void *reload_user_data);
+void settings_dialog_set_font_callback(GtkWidget *dialog_widget,
+                                       void (*cb)(void *), void *user_data);
 void settings_dialog_run(GtkWidget *dialog);
 
 // Helper functions

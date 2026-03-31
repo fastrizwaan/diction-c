@@ -165,6 +165,9 @@ AppSettings* settings_load(void) {
     settings->dictionary_dirs = g_ptr_array_new_with_free_func(g_free);
     settings->dictionary_groups = g_ptr_array_new_with_free_func((GDestroyNotify)dict_group_free);
     settings->theme = g_strdup("system");
+    settings->font_family = g_strdup("sans-serif");
+    settings->font_size = 16;
+    settings->color_theme = g_strdup("default");
 
     char *path = get_settings_file_path();
     if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
@@ -196,6 +199,25 @@ AppSettings* settings_load(void) {
     if (theme) {
         g_free(settings->theme);
         settings->theme = g_strdup(theme);
+    }
+
+    // Font
+    const char *font_family = json_object_get_string_member(obj, "font_family");
+    if (font_family) {
+        g_free(settings->font_family);
+        settings->font_family = g_strdup(font_family);
+    }
+    if (json_object_has_member(obj, "font_size")) {
+        settings->font_size = (int)json_object_get_int_member(obj, "font_size");
+        if (settings->font_size < 8 || settings->font_size > 48)
+            settings->font_size = 16;
+    }
+
+    // Color Theme
+    const char *color_theme = json_object_get_string_member(obj, "color_theme");
+    if (color_theme) {
+        g_free(settings->color_theme);
+        settings->color_theme = g_strdup(color_theme);
     }
 
     // Dictionary directories
@@ -261,6 +283,11 @@ void settings_save(AppSettings *settings) {
 
     JsonObject *root = json_object_new();
     json_object_set_string_member(root, "theme", settings->theme);
+    json_object_set_string_member(root, "font_family",
+        settings->font_family ? settings->font_family : "sans-serif");
+    json_object_set_int_member(root, "font_size", settings->font_size > 0 ? settings->font_size : 16);
+    json_object_set_string_member(root, "color_theme",
+        settings->color_theme ? settings->color_theme : "default");
 
     // Dictionary directories
     JsonArray *dirs = json_array_new();
@@ -317,6 +344,8 @@ void settings_free(AppSettings *settings) {
         g_ptr_array_free(settings->dictionary_dirs, TRUE);
         g_ptr_array_free(settings->dictionary_groups, TRUE);
         g_free(settings->theme);
+        g_free(settings->font_family);
+        g_free(settings->color_theme);
         g_free(settings);
     }
 }
