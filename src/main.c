@@ -1528,7 +1528,6 @@ static GtkWidget *create_sidebar_list_view(SidebarListView *sidebar, GCallback a
     g_signal_connect(factory, "bind", G_CALLBACK(sidebar_list_item_bind), sidebar);
 
     sidebar->list_view = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(sidebar->selection_model), factory));
-    gtk_widget_add_css_class(GTK_WIDGET(sidebar->list_view), "navigation-sidebar");
     gtk_list_view_set_single_click_activate(sidebar->list_view, TRUE);
     g_signal_connect(sidebar->list_view, "activate", activate_cb, sidebar);
     return GTK_WIDGET(sidebar->list_view);
@@ -2061,7 +2060,7 @@ static void update_theme_colors(void) {
         "@define-color view_fg_color %s;\n"
         "@define-color headerbar_bg_color %s;\n"
         "@define-color headerbar_fg_color %s;\n"
-        "@define-color headerbar_border_color %s;\n"
+        "@define-color headerbar_border_color transparent;\n"
         "@define-color sidebar_bg_color %s;\n"
         "@define-color sidebar_fg_color %s;\n"
         "@define-color popover_bg_color %s;\n"
@@ -2073,9 +2072,19 @@ static void update_theme_colors(void) {
         "  color: %s;\n"
         "}\n"
         "headerbar {\n"
-        "  background-color: %s;\n"
+        "  background-color: %s;\n" /* Content header color */
         "  color: %s;\n"
-        "  border-bottom-color: %s;\n"
+        "  border-bottom: none;\n"
+        "}\n"
+        ".sidebar, .navigation-sidebar, .sidebar listview, .navigation-sidebar listview, .sidebar list, .navigation-sidebar list, .sidebar scrolledwindow, .navigation-sidebar scrolledwindow {\n"
+        "  background-color: %s;\n"
+        "  border: none;\n"
+        "}\n"
+        ".navigation-sidebar {\n"
+        "  border-right: 1px solid %s;\n"
+        "}\n"
+        ".sidebar {\n"
+        "  border: none;\n"
         "}\n"
         "row, listitem {\n"
         "  color: %s;\n"
@@ -2107,17 +2116,21 @@ static void update_theme_colors(void) {
         "popover > contents row:checked {\n"
         "  color: %s;\n"
         "}\n",
-        /* @define-color (11 args) */
+        /* @define-color (10 args)*/
         palette.bg, palette.fg,
         palette.bg, palette.fg,
-        c_chrome, palette.fg, palette.border,
+        palette.bg, palette.fg,
         c_chrome, palette.fg,
         c_surface, palette.fg,
         palette.accent,
         /* window/background (2) */
         palette.bg, palette.fg,
-        /* headerbar (3) */
-        c_chrome, palette.fg, palette.border,
+        /* default headerbar (2) */
+        palette.bg, palette.fg,
+        /* sidebar background (1) */
+        c_chrome,
+        /* sidebar border (1) */
+        palette.border,
         /* row/listitem (1) */
         palette.fg,
         /* row:selected (1) */
@@ -2462,9 +2475,11 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
     /* --- Sidebar --- */
     GtkWidget *sidebar_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(sidebar_vbox, "navigation-sidebar");
 
     /* Sidebar Header */
     GtkWidget *sidebar_header = adw_header_bar_new();
+    gtk_widget_add_css_class(sidebar_header, "sidebar");
     gtk_widget_add_css_class(sidebar_header, "flat");
     GtkWidget *title_label = gtk_label_new("Diction");
     gtk_widget_add_css_class(title_label, "title");
@@ -2507,7 +2522,6 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(related_factory, "bind", G_CALLBACK(related_list_item_bind), NULL);
 
     related_list_view = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(related_selection_model), related_factory));
-    gtk_widget_add_css_class(GTK_WIDGET(related_list_view), "navigation-sidebar");
     gtk_list_view_set_single_click_activate(related_list_view, TRUE);
     g_signal_connect(related_list_view, "activate", G_CALLBACK(on_related_item_activated), NULL);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(related_scroll), GTK_WIDGET(related_list_view));
@@ -2587,6 +2601,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         gtk_box_append(GTK_BOX(tabs_box), btn);
     }
     gtk_widget_add_css_class(tabs_box, "sidebar-tabs");
+    gtk_widget_add_css_class(tabs_box, "sidebar");
+    gtk_widget_add_css_class(tabs_box, "flat");
     gtk_box_append(GTK_BOX(sidebar_vbox), tabs_box);
 
     adw_overlay_split_view_set_sidebar(ADW_OVERLAY_SPLIT_VIEW(split_view), sidebar_vbox);
