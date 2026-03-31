@@ -63,7 +63,7 @@ static void populate_search_sidebar(const char *query);
 static void execute_search_now(void);
 static void activate_dictionary_entry(DictEntry *e);
 
-#define BUCKET_COUNT 8
+#define BUCKET_COUNT 6
 
 typedef struct {
     char *query;
@@ -367,9 +367,7 @@ static char *normalize_headword_for_search(const char *value) {
 typedef enum {
     SEARCH_BUCKET_EXACT = 0,
     SEARCH_BUCKET_PREFIX,
-    SEARCH_BUCKET_SPACE_RIGHT,
-    SEARCH_BUCKET_SPACE_LEFT,
-    SEARCH_BUCKET_SPACE_BOTH,
+    SEARCH_BUCKET_PHRASE, 
     SEARCH_BUCKET_SUBSTRING,
     SEARCH_BUCKET_SUFFIX,
     SEARCH_BUCKET_FUZZY
@@ -400,63 +398,76 @@ static guint utf8_length_or_bytes(const char *text) {
     return (guint)g_utf8_strlen(text, -1);
 }
 
-static guint levenshtein_distance_bytes(const char *a, const char *b) {
-    size_t len_a = a ? strlen(a) : 0;
-    size_t len_b = b ? strlen(b) : 0;
+static guint gestalt_longest_match(const gunichar *a, guint a_start, guint a_end,
+                                   const gunichar *b, guint b_start, guint b_end,
+                                   guint *out_a, guint *out_b) {
+    guint max_len = 0;
+    guint best_a = a_start;
+    guint best_b = b_start;
 
-    if (len_a == 0) {
-        return (guint)len_b;
-    }
-    if (len_b == 0) {
-        return (guint)len_a;
-    }
-
-    guint *prev = g_new(guint, len_b + 1);
-    guint *curr = g_new(guint, len_b + 1);
-
-    for (size_t j = 0; j <= len_b; j++) {
-        prev[j] = (guint)j;
-    }
-
-    for (size_t i = 1; i <= len_a; i++) {
-        curr[0] = (guint)i;
-        for (size_t j = 1; j <= len_b; j++) {
-            guint cost = (a[i - 1] == b[j - 1]) ? 0U : 1U;
-            guint deletion = prev[j] + 1U;
-            guint insertion = curr[j - 1] + 1U;
-            guint substitution = prev[j - 1] + cost;
-            guint best = deletion < insertion ? deletion : insertion;
-            curr[j] = best < substitution ? best : substitution;
+    for (guint i = a_start; i < a_end; i++) {
+        for (guint j = b_start; j < b_end; j++) {
+            if (a[i] == b[j]) {
+                guint len = 1;
+                while (i + len < a_end && j + len < b_end && a[i + len] == b[j + len]) {
+                    len++;
+                }
+                if (len > max_len) {
+                    max_len = len;
+                    best_a = i;
+                    best_b = j;
+                }
+            }
         }
-
-        guint *tmp = prev;
-        prev = curr;
-        curr = tmp;
     }
-
-    guint distance = prev[len_b];
-    g_free(prev);
-    g_free(curr);
-    return distance;
+    *out_a = best_a;
+    *out_b = best_b;
+    return max_len;
 }
 
-static double fuzzy_similarity_score(const char *query_key, const char *candidate_key) {
-    size_t len_q = query_key ? strlen(query_key) : 0;
-    size_t len_c = candidate_key ? strlen(candidate_key) : 0;
-    size_t longest = len_q > len_c ? len_q : len_c;
-    if (longest == 0) {
-        return 1.0;
+static guint gestalt_matches(const gunichar *a, guint a_start, guint a_end,
+                             const gunichar *b, guint b_start, guint b_end) {
+    if (a_start >= a_end || b_start >= b_end) {
+        return 0;
     }
+    guint out_a, out_b;
+    guint match_len = gestalt_longest_match(a, a_start, a_end, b, b_start, b_end, &out_a, &out_b);
+    if (match_len == 0) {
+        return 0;
+    }
+    guint matches = match_len;
+    matches += gestalt_matches(a, a_start, out_a, b, b_start, out_b);
+    matches += gestalt_matches(a, out_a + match_len, a_end, b, out_b + match_len, b_end);
+    return matches;
+}
 
-    guint distance = levenshtein_distance_bytes(query_key, candidate_key);
-    if (distance >= longest) {
+static double sequence_matcher_ratio(const char *str_a, const char *str_b) {
+    if (!str_a || !str_b) return 0.0;
+    
+    glong len_a_chars = 0, len_b_chars = 0;
+    gunichar *a = g_utf8_to_ucs4_fast(str_a, -1, &len_a_chars);
+    gunichar *b = g_utf8_to_ucs4_fast(str_b, -1, &len_b_chars);
+    
+    if (!a || !b) {
+        g_free(a);
+        g_free(b);
         return 0.0;
     }
-
-    return 1.0 - ((double)distance / (double)longest);
+    
+    if (len_a_chars == 0 && len_b_chars == 0) {
+        g_free(a); g_free(b);
+        return 1.0;
+    }
+    if (len_a_chars == 0 || len_b_chars == 0) {
+        g_free(a); g_free(b);
+        return 0.0;
+    }
+    
+    guint matches = gestalt_matches(a, 0, len_a_chars, b, 0, len_b_chars);
+    g_free(a);
+    g_free(b);
+    return (2.0 * matches) / (double)(len_a_chars + len_b_chars);
 }
-
-
 
 static gboolean classify_search_candidate(const char *query_key,
                                           guint query_len,
@@ -474,74 +485,60 @@ static gboolean classify_search_candidate(const char *query_key,
         return TRUE;
     }
 
-    gsize qlen = strlen(query_key);
+    /* 2. PHRASE / 5. SUBSTRING (checking phrase first) */
+    const char *match = strstr(candidate_key, query_key);
+    gboolean is_phrase = FALSE;
+    gboolean is_substring = FALSE;
 
-    /* 2. PREFIX (ONLY if NOT space-right) */
+    if (match != NULL) {
+        is_substring = TRUE;
+        gsize qlen = strlen(query_key);
+        const char *m = match;
+        
+        while (m != NULL) {
+            char before = (m > candidate_key) ? *(m - 1) : '\0';
+            char after = *(m + qlen);
+            
+            gboolean valid_before = (before == '\0' || before == ' ' || before == '-' || before == '_' || before == '/');
+            gboolean valid_after = (after == '\0' || after == ' ' || after == '-' || after == '_' || after == '/');
+            
+            if (valid_before && valid_after) {
+                is_phrase = TRUE;
+                break;
+            }
+            m = strstr(m + 1, query_key);
+        }
+        
+        if (is_phrase) {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_PHRASE;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
+        }
+    }
+
+    /* 3. PREFIX */
     if (g_str_has_prefix(candidate_key, query_key)) {
-        /* ensure not already matched as "word " */
-        if (candidate_key[qlen] != ' ') {
-            if (bucket_out) *bucket_out = SEARCH_BUCKET_PREFIX;
-            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
-            return TRUE;
-        }
+        if (bucket_out) *bucket_out = SEARCH_BUCKET_PREFIX;
+        if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+        return TRUE;
     }
 
-    const char *match = candidate_key;
-
-    while ((match = strstr(match, query_key)) != NULL) {
-        const char *before = (match > candidate_key)
-            ? g_utf8_prev_char(match)
-            : NULL;
-        const char *after  = match + qlen;
-
-        gboolean has_before = before != NULL;
-        gboolean has_after  = *after != '\0';
-
-        gboolean before_space = has_before && g_unichar_isspace(g_utf8_get_char(before));
-        gboolean after_space  = has_after  && g_unichar_isspace(g_utf8_get_char(after));
-
-        /* 3. SPACE RIGHT: "word " (e.g. "a day") */
-        if (!before_space && after_space) {
-            if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_RIGHT;
-            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
-            return TRUE;
-        }
-
-        /* 4. SPACE LEFT: " word" (e.g. "take a") */
-        if (before_space && !after_space) {
-            if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_LEFT;
-            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
-            return TRUE;
-        }
-
-        /* 5. SPACE BOTH: " word " (e.g. "take a break") */
-        if (before_space && after_space) {
-            if (bucket_out) *bucket_out = SEARCH_BUCKET_SPACE_BOTH;
-            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
-            return TRUE;
-        }
-
-        match = g_utf8_next_char(match);
-    }
-
-    /* 6. SUFFIX (ONLY if NOT space-left) */
+    /* 4. SUFFIX */
     if (g_str_has_suffix(candidate_key, query_key)) {
-        size_t len = strlen(candidate_key);
-        if (len > qlen && candidate_key[len - qlen - 1] != ' ') {
-            if (bucket_out) *bucket_out = SEARCH_BUCKET_SUFFIX;
-            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
-            return TRUE;
-        }
+        if (bucket_out) *bucket_out = SEARCH_BUCKET_SUFFIX;
+        if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+        return TRUE;
     }
 
-    /* 7. SUBSTRING */
-    if (strstr(candidate_key, query_key) != NULL) {
+    /* 5. SUBSTRING */
+    /* If we found a match above but it wasn't a phrase, return substring */
+    if (is_substring) {
         if (bucket_out) *bucket_out = SEARCH_BUCKET_SUBSTRING;
         if (fuzzy_score_out) *fuzzy_score_out = 0.0;
         return TRUE;
     }
 
-    /* 8. FUZZY (unchanged) */
+    /* 6. FUZZY */
     if (query_len < 3) {
         return FALSE;
     }
@@ -556,7 +553,7 @@ static gboolean classify_search_candidate(const char *query_key,
         return FALSE;
     }
 
-    double ratio = fuzzy_similarity_score(query_key, candidate_key);
+    double ratio = sequence_matcher_ratio(query_key, candidate_key);
     double min_ratio = query_len >= 5 ? 0.74 : 0.78;
     if (ratio < min_ratio) {
         return FALSE;
@@ -1105,7 +1102,7 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
             double score;
 
             if (classify_search_candidate(state->query_key, state->query_len, word_key, &bucket, &score)) {
-                if (bucket <= SEARCH_BUCKET_SPACE_BOTH) {
+                if (bucket <= SEARCH_BUCKET_PHRASE) {
                     if (!g_hash_table_contains(state->seen_words, word_key)) {
                         RelatedRowPayload *payload = g_new0(RelatedRowPayload, 1);
                         payload->type = RELATED_ROW_CANDIDATE;
