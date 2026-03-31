@@ -1990,77 +1990,146 @@ static void refresh_search_results(void) {
     execute_search_now();
 }
 
+static double shift_color_component(double val, double amount, int darken) {
+    if (darken) return CLAMP(val - amount, 0.0, 1.0);
+    return CLAMP(val + amount, 0.0, 1.0);
+}
+
 static void update_theme_colors(void) {
     if (!web_view || !app_settings) return;
 
-    // Update webview background color
-    GdkRGBA bg_color;
     int dark_mode = adw_style_manager_get_dark(adw_style_manager_get_default()) ? 1 : 0;
 
-    if (dark_mode) {
-        gdk_rgba_parse(&bg_color, "#1e1e1e");
-    } else {
-        gdk_rgba_parse(&bg_color, "#ffffff");
-    }
-    webkit_web_view_set_background_color(web_view, &bg_color);
- 
-    // Apply theme to GTK widgets
     dsl_theme_palette palette;
     dict_render_get_theme_palette(app_settings->color_theme, dark_mode, &palette);
-    
+
+    /* Update WebKit background to match palette */
+    GdkRGBA bg_color;
+    if (!gdk_rgba_parse(&bg_color, palette.bg))
+        gdk_rgba_parse(&bg_color, dark_mode ? "#1e1e1e" : "#ffffff");
+    webkit_web_view_set_background_color(web_view, &bg_color);
+
     if (!dynamic_theme_provider) {
         dynamic_theme_provider = gtk_css_provider_new();
         gtk_style_context_add_provider_for_display(
             gdk_display_get_default(),
             GTK_STYLE_PROVIDER(dynamic_theme_provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION
+            GTK_STYLE_PROVIDER_PRIORITY_USER   /* 800 — beats Adwaita at 600 */
         );
     }
-    
+
+    /* Derive Chrome/Surface colors inspired by ViTE */
+    double r, g, b;
+    unsigned int ir, ig, ib;
+    sscanf(palette.bg + 1, "%02x%02x%02x", &ir, &ig, &ib);
+    r = ir / 255.0; g = ig / 255.0; b = ib / 255.0;
+
+    /* Chrome (Sidebar/Header): slightly shifted (darker in light, lighter in dark) */
+    double shift1 = 0.03;
+    char c_chrome[32];
+    g_snprintf(c_chrome, sizeof(c_chrome), "rgb(%d,%d,%d)",
+               (int)(shift_color_component(r, shift1, !dark_mode) * 255),
+               (int)(shift_color_component(g, shift1, !dark_mode) * 255),
+               (int)(shift_color_component(b, shift1, !dark_mode) * 255));
+
+    /* Surface (Popovers): shifted more */
+    double shift2 = 0.06;
+    char c_surface[32];
+    g_snprintf(c_surface, sizeof(c_surface), "rgb(%d,%d,%d)",
+               (int)(shift_color_component(r, shift2, !dark_mode) * 255),
+               (int)(shift_color_component(g, shift2, !dark_mode) * 255),
+               (int)(shift_color_component(b, shift2, !dark_mode) * 255));
+
+    /* Compute hover rgba manually (alpha() is GTK3-only syntax) */
+    unsigned int ar = 0x33, ag = 0x99, ab = 0xcc;
+    if (palette.accent && palette.accent[0] == '#' && strlen(palette.accent) >= 7)
+        sscanf(palette.accent + 1, "%02x%02x%02x", &ar, &ag, &ab);
+    char hover_color[32];
+    g_snprintf(hover_color, sizeof(hover_color),
+               "rgba(%u,%u,%u,0.12)", ar, ag, ab);
+
+    /*
+     * Use Adwaita's @define-color mechanism so the theme engine picks up
+     * our palette for its own rules (borders, shadows, transitions, etc.).
+     * Direct property overrides are added below as a belt-and-suspenders
+     * fallback, but @define-color is what actually moves the needle.
+     */
     char *css = g_strdup_printf(
-        "window, .background, .view, .main-window {\n"
-        "  background-color: %s !important;\n"
-        "  color: %s !important;\n"
+        "@define-color window_bg_color %s;\n"
+        "@define-color window_fg_color %s;\n"
+        "@define-color view_bg_color %s;\n"
+        "@define-color view_fg_color %s;\n"
+        "@define-color headerbar_bg_color %s;\n"
+        "@define-color headerbar_fg_color %s;\n"
+        "@define-color headerbar_border_color %s;\n"
+        "@define-color sidebar_bg_color %s;\n"
+        "@define-color sidebar_fg_color %s;\n"
+        "@define-color popover_bg_color %s;\n"
+        "@define-color popover_fg_color %s;\n"
+        "@define-color accent_bg_color %s;\n"
+        "@define-color accent_fg_color #ffffff;\n"
+        "window.background, .background {\n"
+        "  background-color: %s;\n"
+        "  color: %s;\n"
         "}\n"
-        ".headerbar, headerbar {\n"
-        "  background-color: %s !important;\n"
-        "  color: %s !important;\n"
-        "  border-bottom: 1px solid %s !important;\n"
-        "}\n"
-        "listview, list, .sidebar, .navigation-sidebar, .boxed-list {\n"
-        "  background-color: transparent !important;\n"
+        "headerbar {\n"
+        "  background-color: %s;\n"
+        "  color: %s;\n"
+        "  border-bottom-color: %s;\n"
         "}\n"
         "row, listitem {\n"
-        "  background-color: transparent !important;\n"
-        "  color: %s !important;\n"
+        "  color: %s;\n"
         "}\n"
-        "row:selected, listitem:selected, .selected {\n"
-        "  background-color: %s !important;\n"
-        "  color: #ffffff !important;\n"
+        "row:selected, listitem:selected {\n"
+        "  background-color: %s;\n"
+        "  color: #ffffff;\n"
         "}\n"
-        "row:hover, listitem:hover {\n"
-        "  background-color: alpha(%s, 0.1) !important;\n"
+        "row:hover:not(:selected), listitem:hover:not(:selected) {\n"
+        "  background-color: %s;\n"
         "}\n"
-        ":root {\n"
-        "  --window-bg-color: %s;\n"
-        "  --window-fg-color: %s;\n"
-        "  --view-bg-color: %s;\n"
-        "  --view-fg-color: %s;\n"
-        "  --headerbar-bg-color: %s;\n"
-        "  --headerbar-fg-color: %s;\n"
-        "  --headerbar-border-color: %s;\n"
-        "  --accent-color: %s;\n"
+        "popover > contents {\n"
+        "  background-color: %s;\n"
+        "  color: %s;\n"
+        "}\n"
+        "popover > contents row,\n"
+        "popover > contents listitem {\n"
+        "  color: %s;\n"
+        "  background-color: transparent;\n"
+        "}\n"
+        "popover > contents row:hover:not(:selected),\n"
+        "popover > contents listitem:hover:not(:selected) {\n"
+        "  background-color: %s;\n"
+        "}\n"
+        "popover > contents row:checked {\n"
+        "  color: %s;\n"
         "}\n",
+        /* @define-color (11 args) */
         palette.bg, palette.fg,
-        palette.bg, palette.fg, palette.border,
+        palette.bg, palette.fg,
+        c_chrome, palette.fg, palette.border,
+        c_chrome, palette.fg,
+        c_surface, palette.fg,
+        palette.accent,
+        /* window/background (2) */
+        palette.bg, palette.fg,
+        /* headerbar (3) */
+        c_chrome, palette.fg, palette.border,
+        /* row/listitem (1) */
         palette.fg,
+        /* row:selected (1) */
         palette.accent,
-        palette.accent,
-        palette.bg, palette.fg,
-        palette.bg, palette.fg,
-        palette.bg, palette.fg, palette.border,
+        /* row:hover (1) */
+        hover_color,
+        /* popover contents bg+fg (2) */
+        c_surface, palette.fg,
+        /* popover row color (1) */
+        palette.fg,
+        /* popover row hover (1) */
+        hover_color,
+        /* popover row:checked accent (1) */
         palette.accent
     );
+
     gtk_css_provider_load_from_string(dynamic_theme_provider, css);
     g_free(css);
 

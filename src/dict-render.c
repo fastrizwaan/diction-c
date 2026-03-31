@@ -211,56 +211,72 @@ static char *adjust_color_value_for_theme(const char *value, gboolean dark_mode,
     if (g_str_has_prefix(trimmed, "rgb(") || g_str_has_prefix(trimmed, "rgba(")) {
         const char *open = strchr(trimmed, '(');
         const char *close = strrchr(trimmed, ')');
+
         if (open && close && close > open + 1) {
             char *inner = g_strndup(open + 1, close - open - 1);
-            char **parts = g_strsplit(inner, ",", -1);
-            if (parts[0] && parts[1] && parts[2]) {
-                char *end = NULL;
-                long r = strtol(g_strstrip(parts[0]), &end, 10);
-                long g = strtol(g_strstrip(parts[1]), &end, 10);
-                long b = strtol(g_strstrip(parts[2]), &end, 10);
-                if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
-                    if (dark_mode) {
-                        if (is_background) {
-                            if (r > 96 || g > 96 || b > 96) {
-                                r = (long)(r * 0.24);
-                                g = (long)(g * 0.24);
-                                b = (long)(b * 0.24);
-                            }
-                        } else if (r < 160 || g < 160 || b < 160) {
-                            r = r + (long)((230 - r) * 0.45);
-                            g = g + (long)((230 - g) * 0.45);
-                            b = b + (long)((230 - b) * 0.45);
-                        }
-                    } else if (!is_background && (r > 240 && g > 240 && b > 240)) {
-                        r = 176;
-                        g = 176;
-                        b = 176;
-                    }
 
-                    char *rebuilt = NULL;
-                    if (parts[3]) {
-                        rebuilt = g_strdup_printf("rgba(%ld, %ld, %ld, %s)",
-                                                  CLAMP(r, 0, 255),
-                                                  CLAMP(g, 0, 255),
-                                                  CLAMP(b, 0, 255),
-                                                  g_strstrip(parts[3]));
-                    } else {
-                        rebuilt = g_strdup_printf("rgb(%ld, %ld, %ld)",
-                                                  CLAMP(r, 0, 255),
-                                                  CLAMP(g, 0, 255),
-                                                  CLAMP(b, 0, 255));
-                    }
+            /* normalize commas → spaces */
+            for (char *p = inner; *p; p++) {
+                if (*p == ',') *p = ' ';
+            }
 
-                    g_strfreev(parts);
-                    g_free(inner);
-                    g_free(trimmed);
-                    return rebuilt;
+            /* collapse multiple spaces */
+            g_strstrip(inner);
+
+            char **parts = g_strsplit(inner, " ", -1);
+
+            /* collect first 3 numbers */
+            int idx = 0;
+            long rgb[3] = {0};
+            double alpha = -1.0;
+
+            for (int i = 0; parts[i]; i++) {
+                if (!*parts[i]) continue;
+
+                if (idx < 3) {
+                    rgb[idx++] = strtol(parts[i], NULL, 10);
+                } else {
+                    /* Only extract alpha if we haven't found a slash yet, or if it follows a slash */
+                    if (strcmp(parts[i], "/") == 0) continue;
+                    alpha = g_ascii_strtod(parts[i], NULL);
                 }
             }
+
+            if (idx == 3) {
+                long r = CLAMP(rgb[0], 0, 255);
+                long g = CLAMP(rgb[1], 0, 255);
+                long b = CLAMP(rgb[2], 0, 255);
+
+                if (dark_mode) {
+                    if (is_background) {
+                        if (r > 96 || g > 96 || b > 96) {
+                            r *= 0.24; g *= 0.24; b *= 0.24;
+                        }
+                    } else if (r < 160 || g < 160 || b < 160) {
+                        r += (230 - r) * 0.45;
+                        g += (230 - g) * 0.45;
+                        b += (230 - b) * 0.45;
+                    }
+                }
+
+                char *rebuilt;
+                if (alpha >= 0.0) {
+                    alpha = CLAMP(alpha, 0.0, 1.0);
+                    rebuilt = g_strdup_printf("rgba(%ld, %ld, %ld, %.3f)", r, g, b, alpha);
+                } else {
+                    rebuilt = g_strdup_printf("rgb(%ld, %ld, %ld)", r, g, b);
+                }
+
+                g_strfreev(parts);
+                g_free(inner);
+                g_free(trimmed);
+                return rebuilt;
+            }
+
             g_strfreev(parts);
             g_free(inner);
         }
+
         return trimmed;
     }
 
@@ -302,6 +318,14 @@ static char *adjust_color_value_for_theme(const char *value, gboolean dark_mode,
             g_free(trimmed);
             return g_strdup(adjusted);
         }
+    }
+
+    /* FINAL SAFETY: strip anything GTK can't parse */
+    if (strchr(trimmed, '/')) {
+        /* likely rgb(... / alpha) or invalid syntax → drop alpha */
+        char *safe = g_strdup("rgb(0, 0, 0)");
+        g_free(trimmed);
+        return safe;
     }
 
     return trimmed;
@@ -347,12 +371,77 @@ static char *rewrite_style_for_theme(const char *style, gboolean dark_mode) {
             themed_val = adjust_color_value_for_theme(val, dark_mode, is_background);
         } else if (g_ascii_strcasecmp(prop, "background") == 0 &&
                    !strstr(val, "url(") && !strstr(val, "gradient(")) {
-            themed_val = adjust_color_value_for_theme(val, dark_mode, TRUE);
+            /* GTK doesn't support shorthand properly → force background-color */
+            char *tmp = adjust_color_value_for_theme(val, dark_mode, TRUE);
+            g_free(prop);
+            prop = g_strdup("background-color");
+            themed_val = tmp;
+        } else if (g_str_has_prefix(prop, "border")) {
+            /* Extract only color part for GTK compatibility */
+            char *color = NULL;
+            char **tokens = g_strsplit(val, " ", -1);
+            for (int j = 0; tokens[j]; j++) {
+                if (strchr(tokens[j], '#') ||
+                    g_str_has_prefix(tokens[j], "rgb") ||
+                    g_ascii_isalpha(tokens[j][0])) {
+                    color = g_strdup(tokens[j]);
+                    break;
+                }
+            }
+
+            if (color) {
+                char *tmp = adjust_color_value_for_theme(color, dark_mode, TRUE);
+                char *new_prop;
+
+                if (g_str_has_prefix(prop, "border-bottom"))
+                    new_prop = g_strdup("border-bottom-color");
+                else if (g_str_has_prefix(prop, "border-top"))
+                    new_prop = g_strdup("border-top-color");
+                else if (g_str_has_prefix(prop, "border-left"))
+                    new_prop = g_strdup("border-left-color");
+                else if (g_str_has_prefix(prop, "border-right"))
+                    new_prop = g_strdup("border-right-color");
+                else
+                    new_prop = g_strdup("border-color");
+
+                g_free(prop);
+                prop = new_prop;
+                themed_val = tmp;
+                g_free(color);
+            } else {
+                themed_val = g_strdup(val);
+            }
+            g_strfreev(tokens);
         } else {
             themed_val = g_strdup(val);
         }
 
         if (out->len) g_string_append(out, "; ");
+        g_strstrip(themed_val);
+
+        /* HARD GTK SANITIZATION (final guarantee) */
+        if (themed_val) {
+            /* Fix space-separated rgb → comma form */
+            long r, g, b;
+            double a;
+
+            if (sscanf(themed_val, "rgb(%ld %ld %ld / %lf)", &r, &g, &b, &a) == 4) {
+                char *fixed = g_strdup_printf("rgba(%ld, %ld, %ld, %.3f)", r, g, b, a);
+                g_free(themed_val);
+                themed_val = fixed;
+            } else if (sscanf(themed_val, "rgb(%ld %ld %ld)", &r, &g, &b) == 3) {
+                char *fixed = g_strdup_printf("rgb(%ld, %ld, %ld)", r, g, b);
+                g_free(themed_val);
+                themed_val = fixed;
+            }
+
+            /* If STILL contains slash → GTK can't parse → drop safely */
+            if (strchr(themed_val, '/')) {
+                g_free(themed_val);
+                themed_val = g_strdup("rgb(0, 0, 0)");
+            }
+        }
+
         g_string_append_printf(out, "%s: %s", prop, themed_val);
 
         g_free(themed_val);
