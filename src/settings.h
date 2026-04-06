@@ -40,7 +40,9 @@ void settings_free(AppSettings *settings);
 // Settings dialog
 GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
                                AdwStyleManager *style_manager,
-                               void (*reload_callback)(void *), void *reload_user_data);
+                               void (*reload_callback)(void *),
+                               void (*soft_reload_callback)(void *),
+                               void *user_data);
 void settings_dialog_set_font_callback(GtkWidget *dialog_widget,
                                        void (*cb)(void *), void *user_data);
 void settings_dialog_run(GtkWidget *dialog);

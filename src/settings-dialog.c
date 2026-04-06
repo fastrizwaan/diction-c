@@ -21,7 +21,8 @@ typedef struct _SettingsDialogData {
     AdwStyleManager    *style_manager;
     GtkWindow          *parent_window; /* Parent window for file dialogs */
     void (*reload_callback)(void *);
-    void *reload_user_data;
+    void (*soft_reload_callback)(void *);
+    void *user_data;
     /* font change sink */
     void (*font_changed_callback)(void *);
     void *font_changed_user_data;
@@ -60,7 +61,7 @@ static void on_add_directory_response(GObject *source, GAsyncResult *result, gpo
         if (path) {
              settings_add_directory(data->settings, path);
              update_dir_list(data);
-             if (data->reload_callback) data->reload_callback(data->reload_user_data);
+             if (data->reload_callback) data->reload_callback(data->user_data);
              g_free(path);
         }
         g_object_unref(file);
@@ -87,7 +88,7 @@ static gboolean on_remove_directory_idle(gpointer user_data) {
 static void on_remove_directory_clicked(GtkButton *btn, DirRemoveData *d) {
     (void)btn;
     settings_remove_directory(d->data->settings, d->path);
-    if (d->data->reload_callback) d->data->reload_callback(d->data->reload_user_data);
+    if (d->data->reload_callback) d->data->reload_callback(d->data->user_data);
     g_idle_add(on_remove_directory_idle, d->data);
 }
 
@@ -95,7 +96,7 @@ static void on_rescan_directories(GtkButton *btn, SettingsDialogData *data) {
     (void)btn;
     settings_save(data->settings);
     if (data->reload_callback)
-        data->reload_callback(data->reload_user_data);
+        data->reload_callback(data->user_data);
 }
 
 /* ---- Dictionary callbacks ---- */
@@ -120,7 +121,7 @@ static void on_move_dictionary(GtkButton *btn, DictMoveData *d) {
     const char *id = d->data->selected_dict_id;
     if (!id) return;
     settings_move_dictionary(d->data->settings, id, d->direction);
-    if (d->data->reload_callback) d->data->reload_callback(d->data->reload_user_data);
+    if (d->data->soft_reload_callback) d->data->soft_reload_callback(d->data->user_data);
     update_dict_list(d->data);
     refresh_move_buttons(d->data);
 }
@@ -138,7 +139,7 @@ static void on_add_dictionary_file_response(GObject *source, GAsyncResult *resul
             if (ext) *ext = '\0';
             settings_add_dictionary(data->settings, name, path);
             update_dict_list(data);
-            if (data->reload_callback) data->reload_callback(data->reload_user_data);
+            if (data->reload_callback) data->reload_callback(data->user_data);
             g_free(name);
             g_free(path);
         }
@@ -207,7 +208,7 @@ static void on_remove_dictionary_clicked(GtkButton *btn, DictRemoveData *d) {
     g_free(id_copy);
     /* Save immediately so a re-scan doesn't re-add it */
     settings_save(d->data->settings);
-    if (d->data->reload_callback) d->data->reload_callback(d->data->reload_user_data);
+    if (d->data->soft_reload_callback) d->data->soft_reload_callback(d->data->user_data);
     g_idle_add(on_remove_dictionary_idle, d->data);
 }
 
@@ -234,7 +235,7 @@ static gboolean on_dict_switch_state(GtkSwitch *sw, gboolean state, DictSwitchDa
         cfg->enabled = state ? 1 : 0;
         /* Persist immediately so restart preserves the state */
         settings_save(sd->data->settings);
-        if (sd->data->reload_callback) sd->data->reload_callback(sd->data->reload_user_data);
+        if (sd->data->soft_reload_callback) sd->data->soft_reload_callback(sd->data->user_data);
     }
     return FALSE; /* let GtkSwitch update its visual state */
 }
@@ -330,7 +331,7 @@ static void on_create_group_response(AdwAlertDialog *dialog, const char *respons
             settings_create_group(data->settings, name, ids);
             g_ptr_array_free(ids, FALSE);
             g_hash_table_remove_all(data->group_selection_ids);
-            if (data->reload_callback) data->reload_callback(data->reload_user_data);
+            if (data->soft_reload_callback) data->soft_reload_callback(data->user_data);
             update_group_list(data);
             update_dict_list(data);
             refresh_move_buttons(data);
@@ -594,7 +595,9 @@ static void on_dialog_closed(SettingsDialogData *data) {
 
 GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
                                AdwStyleManager *style_manager,
-                               void (*reload_callback)(void *), void *reload_user_data) {
+                               void (*reload_callback)(void *),
+                               void (*soft_reload_callback)(void *),
+                               void *user_data) {
     (void)parent;
     SettingsDialogData *data = g_new0(SettingsDialogData, 1);
     data->settings            = settings;
@@ -602,7 +605,8 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
     data->style_manager       = style_manager;
     data->parent_window       = parent;
     data->reload_callback     = reload_callback;
-    data->reload_user_data    = reload_user_data;
+    data->soft_reload_callback = soft_reload_callback;
+    data->user_data           = user_data;
 
     AdwDialog *dialog = adw_preferences_dialog_new();
     adw_preferences_dialog_set_search_enabled(ADW_PREFERENCES_DIALOG(dialog), FALSE);

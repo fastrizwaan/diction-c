@@ -2272,8 +2272,12 @@ static void apply_font_to_webview(void *user_data) {
     update_theme_colors();
 }
 
+static GMutex dict_loader_mutex;
+static volatile gint loader_generation = 0;
+
 static void reload_dictionaries_from_settings(void *user_data) {
     (void)user_data;
+    g_atomic_int_inc(&loader_generation);
     if (search_execute_source_id != 0) {
         g_source_remove(search_execute_source_id);
         search_execute_source_id = 0;
@@ -2306,12 +2310,20 @@ static void reload_dictionaries_from_settings(void *user_data) {
     start_async_dict_loading();
 }
 
+static void refresh_dictionaries_ui(void *user_data) {
+    (void)user_data;
+    populate_dict_sidebar();
+    populate_history_sidebar();
+    populate_favorites_sidebar();
+    populate_groups_sidebar();
+}
+
 static void show_settings_dialog(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     (void)action; (void)parameter;
     GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(user_data));
     if (window) {
         GtkWidget *dialog = settings_dialog_new(window, app_settings, style_manager,
-            reload_dictionaries_from_settings, NULL);
+            reload_dictionaries_from_settings, refresh_dictionaries_ui, NULL);
         settings_dialog_set_font_callback(dialog, apply_font_to_webview, NULL);
         adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(window));
     }
@@ -2384,21 +2396,32 @@ static void populate_dict_sidebar(void) {
 }
 
 // ------- Async loading infrastructure -------
+
 typedef struct {
     char **dirs;          // NULL-terminated array of directory paths to scan
     int   n_dirs;
     char **manual_paths;  // NULL-terminated array of manually-added dictionary files
     int   n_manual;
+    gint  generation;
 } LoadThreadArgs;
 
 // Payload passed from thread to main thread via g_idle_add
 typedef struct {
     DictEntry *entry; // single loaded entry (next == NULL on delivery)
     gboolean   done;  // TRUE = loading finished
+    gint       generation;
 } LoadIdleData;
 
 static gboolean on_dict_loaded_idle(gpointer user_data) {
     LoadIdleData *ld = user_data;
+
+    if (ld->generation != g_atomic_int_get(&loader_generation)) {
+        if (ld->entry) {
+            dict_loader_free(ld->entry);
+        }
+        g_free(ld);
+        return G_SOURCE_REMOVE;
+    }
 
     if (!ld->done && ld->entry) {
         DictEntry *e = ld->entry;
@@ -2479,17 +2502,25 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
 }
 
 static void on_dict_found_streaming(DictEntry *e, void *user_data) {
-    (void)user_data;
+    gint *gen_ptr = user_data;
     LoadIdleData *ld = g_new0(LoadIdleData, 1);
     ld->entry = e;
     ld->done  = FALSE;
+    ld->generation = *gen_ptr;
     g_idle_add(on_dict_loaded_idle, ld);
 }
 
 static gpointer dict_load_thread(gpointer user_data) {
     LoadThreadArgs *args = user_data;
 
+    g_mutex_lock(&dict_loader_mutex);
+    if (args->generation != g_atomic_int_get(&loader_generation)) {
+        g_mutex_unlock(&dict_loader_mutex);
+        goto cleanup;
+    }
+
     for (int i = 0; i < args->n_manual; i++) {
+        if (args->generation != g_atomic_int_get(&loader_generation)) break;
         const char *path = args->manual_paths[i];
         DictFormat fmt = dict_detect_format(path);
         DictMmap *dict = dict_load_any(path, fmt);
@@ -2501,17 +2532,36 @@ static gpointer dict_load_thread(gpointer user_data) {
         entry->path = strdup(path);
         entry->format = fmt;
         entry->dict = dict;
-        entry->name = dict->name ? strdup(dict->name) : g_path_get_basename(path);
-        on_dict_found_streaming(entry, NULL);
+        if (dict->name) {
+            char *valid = g_utf8_make_valid(dict->name, -1);
+            entry->name = strdup(valid);
+            g_free(valid);
+        } else {
+            char *base = g_path_get_basename(path);
+            char *valid = g_utf8_make_valid(base, -1);
+            entry->name = strdup(valid);
+            g_free(valid);
+            g_free(base);
+        }
+
+        char *valid_path = g_utf8_make_valid(path, -1);
+        entry->path = strdup(valid_path);
+        g_free(valid_path);
+        on_dict_found_streaming(entry, &args->generation);
     }
 
     for (int i = 0; i < args->n_dirs; i++) {
-        dict_loader_scan_directory_streaming(args->dirs[i], on_dict_found_streaming, NULL);
+        if (args->generation != g_atomic_int_get(&loader_generation)) break;
+        dict_loader_scan_directory_streaming(args->dirs[i], on_dict_found_streaming, &args->generation, &loader_generation, args->generation);
     }
 
+    g_mutex_unlock(&dict_loader_mutex);
+
+cleanup:
     // Signal completion
     LoadIdleData *done_ld = g_new0(LoadIdleData, 1);
     done_ld->done = TRUE;
+    done_ld->generation = args->generation;
     g_idle_add(on_dict_loaded_idle, done_ld);
 
     // Free args
@@ -2557,6 +2607,7 @@ static void start_async_dict_loading(void) {
         return;
     }
 
+    args->generation = g_atomic_int_get(&loader_generation);
     GThread *thread = g_thread_new("dict-loader", dict_load_thread, args);
     g_thread_unref(thread); // fire-and-forget
 }

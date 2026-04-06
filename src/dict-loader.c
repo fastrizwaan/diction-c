@@ -126,12 +126,18 @@ DictMmap* dict_load_any(const char *path, DictFormat fmt) {
 
 static void scan_recursive(const char *dirpath, DictEntry **head,
                            DictLoaderCallback callback, void *user_data,
-                           GHashTable *seen_dsl_families) {
+                           GHashTable *seen_dsl_families,
+                           volatile gint *cancel_flag,
+                           gint expected_generation) {
+    if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) return;
+
     DIR *d = opendir(dirpath);
     if (!d) return;
 
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
+        if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) break;
+
         if (ent->d_name[0] == '.') continue;
 
         char *full = path_join(dirpath, ent->d_name);
@@ -143,7 +149,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
             if (!ends_with_ci(full, ".files") &&
                 !ends_with_ci(full, ".dsl.files") &&
                 !ends_with_ci(full, ".dsl.dz.files")) {
-                scan_recursive(full, head, callback, user_data, seen_dsl_families);
+                scan_recursive(full, head, callback, user_data, seen_dsl_families, cancel_flag, expected_generation);
             }
             free(full);
             continue;
@@ -194,12 +200,21 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
 
         DictEntry *entry = calloc(1, sizeof(DictEntry));
         if (loaded->name) {
-            entry->name = strdup(loaded->name);
+            char *valid = g_utf8_make_valid(loaded->name, -1);
+            entry->name = strdup(valid);
+            g_free(valid);
         } else {
-            entry->name = basename_noext(load_path);
+            char *base = basename_noext(load_path);
+            char *valid = g_utf8_make_valid(base, -1);
+            entry->name = strdup(valid);
+            g_free(valid);
+            free(base);
         }
         free(full);
-        entry->path = strdup(load_path);
+        
+        char *valid_path = g_utf8_make_valid(load_path, -1);
+        entry->path = strdup(valid_path);
+        g_free(valid_path);
         entry->format = fmt;
         entry->dict = loaded;
 
@@ -223,14 +238,14 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
 DictEntry* dict_loader_scan_directory(const char *dirpath) {
     DictEntry *head = NULL;
     GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    scan_recursive(dirpath, &head, NULL, NULL, seen_dsl_families);
+    scan_recursive(dirpath, &head, NULL, NULL, seen_dsl_families, NULL, 0);
     g_hash_table_destroy(seen_dsl_families);
     return head;
 }
 
-void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallback callback, void *user_data) {
+void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallback callback, void *user_data, volatile gint *cancel_flag, gint expected_generation) {
     GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    scan_recursive(dirpath, NULL, callback, user_data, seen_dsl_families);
+    scan_recursive(dirpath, NULL, callback, user_data, seen_dsl_families, cancel_flag, expected_generation);
     g_hash_table_destroy(seen_dsl_families);
 }
 

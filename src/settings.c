@@ -178,13 +178,30 @@ AppSettings* settings_load(void) {
 
     GError *error = NULL;
     JsonParser *parser = json_parser_new();
-    if (!json_parser_load_from_file(parser, path, &error)) {
-        g_warning("Failed to load settings: %s", error->message);
+    char *json_data = NULL;
+    gsize json_len = 0;
+
+    if (!g_file_get_contents(path, &json_data, &json_len, &error)) {
+        g_warning("Failed to read settings file: %s", error->message);
         g_error_free(error);
         g_object_unref(parser);
         g_free(path);
         return settings;
     }
+
+    /* Heal potentially corrupt JSON files containing invalid UTF-8 characters */
+    char *valid_json = g_utf8_make_valid(json_data, json_len);
+    g_free(json_data);
+
+    if (!json_parser_load_from_data(parser, valid_json, -1, &error)) {
+        g_warning("Failed to parse settings: %s", error->message);
+        g_error_free(error);
+        g_free(valid_json);
+        g_object_unref(parser);
+        g_free(path);
+        return settings;
+    }
+    g_free(valid_json);
 
     JsonNode *root = json_parser_get_root(parser);
     if (!JSON_NODE_HOLDS_OBJECT(root)) {

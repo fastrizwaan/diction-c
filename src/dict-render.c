@@ -1161,7 +1161,7 @@ static char *inline_local_stylesheet_if_possible(const char *tag, const char *re
         char *css = NULL;
         gsize css_len = 0;
 
-        if (g_file_get_contents(path, &css, &css_len, NULL)) {
+        if (path && g_file_get_contents(path, &css, &css_len, NULL)) {
             char *with_urls = rewrite_css_urls(css, resource_dir, source_dir);
             char *with_theme = rewrite_stylesheet_for_theme(with_urls, dark_mode);
             result = g_strdup_printf("<style data-diction-inline-css='1'>%s</style>", with_theme);

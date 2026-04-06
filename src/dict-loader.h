@@ -32,7 +32,9 @@ DictEntry* dict_loader_scan_directory(const char *dirpath);
 /* Streaming version: calls callback for each loaded dictionary */
 void dict_loader_scan_directory_streaming(const char *dirpath, 
                                            DictLoaderCallback callback, 
-                                           void *user_data);
+                                           void *user_data,
+                                           volatile gint *cancel_flag,
+                                           gint expected_generation);
 
 /* Free all entries in a DictEntry linked list */
 void dict_loader_free(DictEntry *head);
