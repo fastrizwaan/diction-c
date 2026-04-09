@@ -20,3 +20,4 @@ diction
 ViTE
 .codex
 build build-codex build.sh
+build*

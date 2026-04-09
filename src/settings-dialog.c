@@ -19,6 +19,12 @@ static char *normalize_scan_path(const char *path) {
     return canon;
 }
 
+static GtkWidget *new_plain_action_row(void) {
+    GtkWidget *row = adw_action_row_new();
+    adw_preferences_row_set_use_markup(ADW_PREFERENCES_ROW(row), FALSE);
+    return row;
+}
+
 typedef struct _SettingsDialogData {
     AdwDialog          *dialog;
     AppSettings        *settings;
@@ -449,7 +455,7 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
             }
         }
 
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sid->path);
         gtk_list_box_append(ctx->list, GTK_WIDGET(row));
@@ -773,7 +779,7 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
                 /* Create a pending row if not already present */
                 if (!ctx->row_map) ctx->row_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
                 if (!g_hash_table_lookup(ctx->row_map, canon)) {
-                    GtkWidget *row = adw_action_row_new();
+                    GtkWidget *row = new_plain_action_row();
                     char *b = g_path_get_basename(full);
                     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), b);
                     g_free(b);
@@ -1321,7 +1327,7 @@ static void update_dir_list(SettingsDialogData *data) {
         gtk_list_box_remove(data->dir_list, child);
 
     if (data->settings->dictionary_dirs->len == 0) {
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "No directories configured");
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Add one or more folders containing dictionaries");
         gtk_widget_set_sensitive(row, FALSE);
@@ -1334,7 +1340,7 @@ static void update_dir_list(SettingsDialogData *data) {
         const char *path = g_ptr_array_index(data->settings->dictionary_dirs, i);
         char *name = g_path_get_basename(path);
 
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), name);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), path);
         g_free(name);
@@ -1363,7 +1369,7 @@ static void update_dict_list(SettingsDialogData *data) {
         gtk_list_box_remove(data->dict_list, child);
 
     if (data->settings->dictionaries->len == 0) {
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "No dictionaries available");
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
             "Add a dictionary file or rescan configured directories.");
@@ -1376,7 +1382,7 @@ static void update_dict_list(SettingsDialogData *data) {
     for (guint i = 0; i < data->settings->dictionaries->len; i++) {
         DictConfig *cfg = g_ptr_array_index(data->settings->dictionaries, i);
 
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), cfg->name);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), cfg->path);
         /* Store id as a key for later row identification */
@@ -1451,7 +1457,7 @@ static void update_group_list(SettingsDialogData *data) {
         gtk_list_box_remove(data->group_list, child);
 
     if (data->settings->dictionary_groups->len == 0) {
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), "No custom groups");
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row),
             "Tick one or more dictionaries above, then create a group.");
@@ -1466,7 +1472,7 @@ static void update_group_list(SettingsDialogData *data) {
         char subtitle[256];
         snprintf(subtitle, sizeof(subtitle), "%u dictionaries", grp->members->len);
 
-        GtkWidget *row = adw_action_row_new();
+        GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), grp->name);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), subtitle);
 
@@ -1741,6 +1747,7 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
     adw_preferences_dialog_add(ADW_PREFERENCES_DIALOG(dialog), dict_page);
 
     data->dict_banner = ADW_BANNER(adw_banner_new("Dictionary changes will appear here."));
+    adw_banner_set_use_markup(data->dict_banner, FALSE);
     adw_banner_set_revealed(data->dict_banner, FALSE);
     adw_preferences_page_set_banner(dict_page, data->dict_banner);
 
@@ -1750,15 +1757,15 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
         "Keep an eye on your library size, current selection, and session changes.");
     adw_preferences_page_add(dict_page, overview_group);
 
-    data->dict_library_row = ADW_ACTION_ROW(adw_action_row_new());
+    data->dict_library_row = ADW_ACTION_ROW(new_plain_action_row());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(data->dict_library_row), "Library");
     adw_preferences_group_add(overview_group, GTK_WIDGET(data->dict_library_row));
 
-    data->dict_selection_row = ADW_ACTION_ROW(adw_action_row_new());
+    data->dict_selection_row = ADW_ACTION_ROW(new_plain_action_row());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(data->dict_selection_row), "Selection");
     adw_preferences_group_add(overview_group, GTK_WIDGET(data->dict_selection_row));
 
-    data->dict_activity_row = ADW_ACTION_ROW(adw_action_row_new());
+    data->dict_activity_row = ADW_ACTION_ROW(new_plain_action_row());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(data->dict_activity_row), "Session Changes");
     adw_preferences_group_add(overview_group, GTK_WIDGET(data->dict_activity_row));
 

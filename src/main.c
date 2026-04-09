@@ -26,6 +26,15 @@ static GtkListView *related_list_view = NULL;
 static GPtrArray *related_row_payloads = NULL;
 static WebKitUserContentManager *font_ucm = NULL;       /* shared across web views */
 static WebKitUserStyleSheet *font_user_stylesheet = NULL; /* current injected font CSS */
+static GtkWindow *main_window = NULL;
+static GtkWindow *startup_splash_window = NULL;
+static GtkLabel *startup_splash_status_label = NULL;
+static GtkLabel *startup_splash_count_label = NULL;
+static GtkProgressBar *startup_splash_progress = NULL;
+static guint startup_splash_pulse_id = 0;
+static gboolean startup_loading_active = FALSE;
+static gboolean dictionary_loading_in_progress = FALSE;
+static gboolean startup_random_word_pending = FALSE;
 
 typedef enum {
     SIDEBAR_ROW_HINT = 0,
@@ -54,6 +63,243 @@ static SidebarListView history_sidebar = {0};
 static SidebarListView favorites_sidebar = {0};
 static SidebarListView groups_sidebar = {0};
 static GtkCssProvider *dynamic_theme_provider = NULL;
+
+static gboolean pulse_startup_splash(gpointer user_data) {
+    (void)user_data;
+    if (!startup_loading_active || !startup_splash_progress) {
+        startup_splash_pulse_id = 0;
+        return G_SOURCE_REMOVE;
+    }
+
+    gtk_progress_bar_pulse(startup_splash_progress);
+    return G_SOURCE_CONTINUE;
+}
+
+static void ensure_startup_splash_pulsing(void) {
+    if (startup_splash_pulse_id != 0) {
+        return;
+    }
+
+    if (!startup_splash_progress) {
+        return;
+    }
+
+    gtk_progress_bar_set_pulse_step(startup_splash_progress, 0.08);
+    startup_splash_pulse_id = g_timeout_add(80, pulse_startup_splash, NULL);
+}
+
+static void stop_startup_splash_pulsing(void) {
+    if (startup_splash_pulse_id != 0) {
+        g_source_remove(startup_splash_pulse_id);
+        startup_splash_pulse_id = 0;
+    }
+}
+
+static void update_startup_splash_progress(guint completed, guint total, const char *status_text) {
+    if (!startup_splash_window) {
+        return;
+    }
+
+    if (startup_splash_status_label) {
+        if (status_text && *status_text) {
+            gtk_label_set_text(startup_splash_status_label, status_text);
+        } else if (total > 0) {
+            char *fallback = g_strdup_printf("Loading dictionaries... %u/%u", completed, total);
+            gtk_label_set_text(startup_splash_status_label, fallback);
+            g_free(fallback);
+        } else {
+            gtk_label_set_text(startup_splash_status_label, "Preparing dictionary library...");
+        }
+    }
+
+    if (!startup_splash_progress) {
+        return;
+    }
+
+    if (total > 0) {
+        if (startup_splash_count_label) {
+            char *count = g_strdup_printf("%u of %u", completed, total);
+            gtk_label_set_text(startup_splash_count_label, count);
+            g_free(count);
+        }
+        stop_startup_splash_pulsing();
+        gtk_progress_bar_set_fraction(startup_splash_progress,
+            CLAMP((gdouble)completed / (gdouble)MAX(total, 1), 0.0, 1.0));
+    } else {
+        if (startup_splash_count_label) {
+            gtk_label_set_text(startup_splash_count_label, "Scanning...");
+        }
+        gtk_progress_bar_set_fraction(startup_splash_progress, 0.0);
+        ensure_startup_splash_pulsing();
+    }
+}
+
+static GtkWidget *create_startup_splash_logo(void) {
+    char *cwd = g_get_current_dir();
+    char *icon_path = g_build_filename(cwd,
+                                       "data", "icons",
+                                       "io.github.fastrizwaan.diction.svg",
+                                       NULL);
+    GtkWidget *image = NULL;
+
+    if (g_file_test(icon_path, G_FILE_TEST_EXISTS)) {
+        image = gtk_image_new_from_file(icon_path);
+    } else {
+        image = gtk_image_new_from_icon_name("io.github.fastrizwaan.diction");
+    }
+
+    gtk_image_set_pixel_size(GTK_IMAGE(image), 48);
+    g_free(cwd);
+    g_free(icon_path);
+    return image;
+}
+
+static void ensure_startup_splash_css(void) {
+    static GtkCssProvider *provider = NULL;
+    if (provider) {
+        return;
+    }
+
+    provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        "window.startup-splash {"
+        "  background: transparent;"
+        "}"
+        ".startup-shell {"
+        "  margin: 18px;"
+        "  border-radius: 24px;"
+        "  padding: 22px 24px 18px 24px;"
+        "  border: 1px solid alpha(@accent_bg_color, 0.18);"
+        "  background: linear-gradient(135deg, alpha(@accent_bg_color, 0.10), alpha(@window_bg_color, 0.98));"
+        "}"
+        ".startup-logo-wrap {"
+        "  min-width: 72px;"
+        "  min-height: 72px;"
+        "  border-radius: 18px;"
+        "  background: alpha(@accent_bg_color, 0.14);"
+        "}"
+        ".startup-title {"
+        "  font-size: 1.55rem;"
+        "  font-weight: 800;"
+        "  letter-spacing: -0.02em;"
+        "}"
+        ".startup-subtitle {"
+        "  opacity: 0.78;"
+        "  font-size: 0.96rem;"
+        "}"
+        ".startup-meta {"
+        "  min-height: 20px;"
+        "}"
+        ".startup-status {"
+        "  opacity: 0.82;"
+        "  font-size: 0.92rem;"
+        "}"
+        ".startup-count {"
+        "  opacity: 0.62;"
+        "  font-size: 0.84rem;"
+        "  font-variant-numeric: tabular-nums;"
+        "}"
+        ".startup-progress trough, .startup-progress progress {"
+        "  min-height: 7px;"
+        "  border-radius: 999px;"
+        "}");
+
+    gtk_style_context_add_provider_for_display(gdk_display_get_default(),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+}
+
+static void show_startup_splash(GtkApplication *app) {
+    if (startup_splash_window) {
+        return;
+    }
+
+    ensure_startup_splash_css();
+
+    GtkWindow *window = GTK_WINDOW(gtk_window_new());
+    gtk_window_set_application(window, app);
+    gtk_window_set_title(window, "Diction");
+    gtk_window_set_default_size(window, 480, 168);
+    gtk_window_set_resizable(window, FALSE);
+    gtk_window_set_decorated(window, FALSE);
+    gtk_window_set_modal(window, FALSE);
+    gtk_window_set_hide_on_close(window, TRUE);
+    gtk_window_set_icon_name(window, "io.github.fastrizwaan.diction");
+    if (main_window) {
+        gtk_window_set_transient_for(window, main_window);
+    }
+    gtk_widget_add_css_class(GTK_WIDGET(window), "startup-splash");
+
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(outer, "startup-shell");
+    gtk_window_set_child(window, outer);
+
+    GtkWidget *header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_box_append(GTK_BOX(outer), header);
+
+    GtkWidget *logo_wrap = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_add_css_class(logo_wrap, "startup-logo-wrap");
+    gtk_widget_set_halign(logo_wrap, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(logo_wrap, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(header), logo_wrap);
+    gtk_box_append(GTK_BOX(logo_wrap), create_startup_splash_logo());
+
+    GtkWidget *copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_hexpand(copy, TRUE);
+    gtk_box_append(GTK_BOX(header), copy);
+
+    GtkWidget *title = gtk_label_new("Diction");
+    gtk_widget_add_css_class(title, "startup-title");
+    gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+    gtk_box_append(GTK_BOX(copy), title);
+
+    GtkWidget *subtitle = gtk_label_new("A fast and lightweight dictionary application");
+    gtk_widget_add_css_class(subtitle, "startup-subtitle");
+    gtk_label_set_xalign(GTK_LABEL(subtitle), 0.0f);
+    gtk_label_set_wrap(GTK_LABEL(subtitle), TRUE);
+    gtk_box_append(GTK_BOX(copy), subtitle);
+
+    GtkWidget *meta = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_add_css_class(meta, "startup-meta");
+    gtk_widget_set_margin_top(meta, 14);
+    gtk_box_append(GTK_BOX(outer), meta);
+
+    startup_splash_status_label = GTK_LABEL(gtk_label_new("Preparing dictionary library..."));
+    gtk_widget_add_css_class(GTK_WIDGET(startup_splash_status_label), "startup-status");
+    gtk_label_set_xalign(startup_splash_status_label, 0.0f);
+    gtk_label_set_ellipsize(startup_splash_status_label, PANGO_ELLIPSIZE_END);
+    gtk_widget_set_hexpand(GTK_WIDGET(startup_splash_status_label), TRUE);
+    gtk_box_append(GTK_BOX(meta), GTK_WIDGET(startup_splash_status_label));
+
+    startup_splash_count_label = GTK_LABEL(gtk_label_new("Scanning..."));
+    gtk_widget_add_css_class(GTK_WIDGET(startup_splash_count_label), "startup-count");
+    gtk_label_set_xalign(startup_splash_count_label, 1.0f);
+    gtk_box_append(GTK_BOX(meta), GTK_WIDGET(startup_splash_count_label));
+
+    startup_splash_progress = GTK_PROGRESS_BAR(gtk_progress_bar_new());
+    gtk_widget_add_css_class(GTK_WIDGET(startup_splash_progress), "startup-progress");
+    gtk_widget_set_margin_top(GTK_WIDGET(startup_splash_progress), 12);
+    gtk_box_append(GTK_BOX(outer), GTK_WIDGET(startup_splash_progress));
+
+    startup_splash_window = window;
+    startup_loading_active = TRUE;
+    update_startup_splash_progress(0, 0, "Preparing dictionary library...");
+    gtk_window_present(window);
+}
+
+static void close_startup_splash(void) {
+    stop_startup_splash_pulsing();
+    startup_loading_active = FALSE;
+
+    if (startup_splash_window) {
+        gtk_window_destroy(startup_splash_window);
+    }
+
+    startup_splash_window = NULL;
+    startup_splash_status_label = NULL;
+    startup_splash_count_label = NULL;
+    startup_splash_progress = NULL;
+}
 
 /* Safely produce a markup-escaped UTF-8 string from possibly-binary input.
  * If `len` >= 0, the input is treated as a byte buffer of that length;
@@ -96,13 +342,16 @@ static void log_markup_preview(const char *where, const char *markup) {
 #define HISTORY_FILE_NAME "history.json"
 #define FAVORITES_FILE_NAME "favorites.json"
 static void populate_dict_sidebar(void);      // forward declaration
-static void start_async_dict_loading(void);   // forward declaration
+static gboolean start_async_dict_loading(gboolean discover_from_dirs);   // forward declaration
 static void on_search_changed(GtkSearchEntry *entry, gpointer user_data); // forward declaration
 static void on_random_clicked(GtkButton *btn, gpointer user_data);
+static void maybe_show_startup_random_word(void);
 static void refresh_search_results(void);
 static void populate_search_sidebar(const char *query);
 static void execute_search_now(void);
 static void activate_dictionary_entry(DictEntry *e);
+static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded);
+static gboolean on_dict_loaded_idle(gpointer user_data);
 
 #define BUCKET_COUNT 6
 
@@ -1364,6 +1613,162 @@ static gboolean dict_entry_in_active_scope(DictEntry *entry) {
     return dict_entry_in_scope(entry, active_scope_id);
 }
 
+static gboolean path_is_inside_directory(const char *path, const char *dir) {
+    if (!path || !dir || !*path || !*dir) {
+        return FALSE;
+    }
+
+    gsize dir_len = strlen(dir);
+    if (!g_str_has_prefix(path, dir)) {
+        return FALSE;
+    }
+
+    if (path[dir_len] == '\0') {
+        return TRUE;
+    }
+
+    return dir[dir_len - 1] == G_DIR_SEPARATOR || path[dir_len] == G_DIR_SEPARATOR;
+}
+
+static DictEntry *dict_entry_new_shell(const char *name, const char *path) {
+    if (!path || !*path) {
+        return NULL;
+    }
+
+    DictEntry *entry = calloc(1, sizeof(DictEntry));
+    entry->format = dict_detect_format(path);
+    entry->path = strdup(path);
+    entry->name = strdup((name && *name) ? name : path);
+    return entry;
+}
+
+static DictEntry *find_dict_entry_by_path(const char *path) {
+    if (!path) {
+        return NULL;
+    }
+
+    for (DictEntry *entry = all_dicts; entry; entry = entry->next) {
+        if (g_strcmp0(entry->path, path) == 0) {
+            return entry;
+        }
+    }
+
+    return NULL;
+}
+
+static guint rebuild_dict_entries_from_settings(void) {
+    DictEntry *old_head = all_dicts;
+    DictEntry *new_head = NULL;
+    DictEntry *new_tail = NULL;
+    guint count = 0;
+    char *active_path = active_entry && active_entry->path ? g_strdup(active_entry->path) : NULL;
+
+    GHashTable *existing_by_path = g_hash_table_new(g_str_hash, g_str_equal);
+    GHashTable *reused_entries = g_hash_table_new(g_direct_hash, g_direct_equal);
+
+    for (DictEntry *entry = old_head; entry; entry = entry->next) {
+        if (entry->path && !g_hash_table_contains(existing_by_path, entry->path)) {
+            g_hash_table_insert(existing_by_path, entry->path, entry);
+        }
+    }
+
+    if (app_settings) {
+        for (guint i = 0; i < app_settings->dictionaries->len; i++) {
+            DictConfig *cfg = g_ptr_array_index(app_settings->dictionaries, i);
+            if (!cfg || !cfg->path || !*cfg->path) {
+                continue;
+            }
+
+            DictEntry *entry = g_hash_table_lookup(existing_by_path, cfg->path);
+            if (!entry) {
+                entry = dict_entry_new_shell(cfg->name, cfg->path);
+            } else {
+                g_hash_table_add(reused_entries, entry);
+                free(entry->name);
+                entry->name = strdup((cfg->name && *cfg->name) ? cfg->name : cfg->path);
+                if (g_strcmp0(entry->path, cfg->path) != 0) {
+                    free(entry->path);
+                    entry->path = strdup(cfg->path);
+                }
+                entry->format = dict_detect_format(cfg->path);
+                entry->has_matches = FALSE;
+            }
+
+            if (!entry) {
+                continue;
+            }
+
+            entry->next = NULL;
+            if (!new_head) {
+                new_head = entry;
+            } else {
+                new_tail->next = entry;
+            }
+            new_tail = entry;
+            count++;
+        }
+    }
+
+    for (DictEntry *entry = old_head; entry; ) {
+        DictEntry *next = entry->next;
+        if (!g_hash_table_contains(reused_entries, entry)) {
+            entry->next = NULL;
+            dict_loader_free(entry);
+        }
+        entry = next;
+    }
+
+    g_hash_table_unref(existing_by_path);
+    g_hash_table_unref(reused_entries);
+
+    all_dicts = new_head;
+    active_entry = active_path ? find_dict_entry_by_path(active_path) : NULL;
+    if (!active_entry) {
+        active_entry = all_dicts;
+    }
+    g_free(active_path);
+    return count;
+}
+
+static gboolean should_rescan_dictionary_dirs(void) {
+    if (!app_settings || app_settings->dictionary_dirs->len == 0) {
+        return FALSE;
+    }
+
+    for (guint i = 0; i < app_settings->dictionary_dirs->len; i++) {
+        const char *dir = g_ptr_array_index(app_settings->dictionary_dirs, i);
+        gboolean indexed = FALSE;
+
+        for (guint j = 0; j < app_settings->dictionaries->len; j++) {
+            DictConfig *cfg = g_ptr_array_index(app_settings->dictionaries, j);
+            if (!cfg || !cfg->path || !*cfg->path) {
+                continue;
+            }
+            if (g_strcmp0(cfg->source, "directory") == 0 &&
+                path_is_inside_directory(cfg->path, dir)) {
+                indexed = TRUE;
+                break;
+            }
+        }
+
+        if (!indexed) {
+            for (guint j = 0; j < app_settings->ignored_dictionary_paths->len; j++) {
+                const char *ignored = g_ptr_array_index(app_settings->ignored_dictionary_paths, j);
+                if (path_is_inside_directory(ignored, dir)) {
+                    indexed = TRUE;
+                    break;
+                }
+            }
+        }
+
+        if (!indexed) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 static void sync_settings_dictionaries_from_loaded(void) {
     if (!app_settings) {
         return;
@@ -1925,12 +2330,24 @@ static void execute_search_now(void) {
         webkit_web_view_load_html(web_view, html_res->str, "file:///");
         update_history_word(query);
     } else {
+        guint enabled_dicts = 0;
+        guint loaded_dicts = 0;
+        for (DictEntry *e = all_dicts; e; e = e->next) {
+            if (!dict_entry_in_active_scope(e)) {
+                continue;
+            }
+            enabled_dicts++;
+            if (e->dict && e->dict->index) {
+                loaded_dicts++;
+            }
+        }
+
         // Theme-aware no results message
         int dark_mode = style_manager && adw_style_manager_get_dark(style_manager) ? 1 : 0;
         const char *text_color = dark_mode ? "#aaaaaa" : "#666666";
 
         char *escaped_query = safe_markup_escape_n(query, -1);
-        char buf[512];
+        char buf[768];
         snprintf(buf, sizeof(buf),
             "<div style='padding: 20px; color: %s; font-style: italic;'>"
             "No exact match for <b>%s</b> in any dictionary.</div>", text_color, query);
@@ -1938,6 +2355,14 @@ static void execute_search_now(void) {
             snprintf(buf, sizeof(buf),
                 "<div style='padding: 20px; color: %s; font-style: italic;'>"
                 "No exact match for <b>%s</b> in any dictionary.</div>", text_color, escaped_query);
+        }
+        if (dictionary_loading_in_progress && loaded_dicts < enabled_dicts) {
+            char loading_note[256];
+            g_snprintf(loading_note, sizeof(loading_note),
+                "<div style='padding: 0 20px 20px 20px; color: %s; opacity: 0.72;'>"
+                "Still loading %u of %u dictionaries in the background.</div>",
+                text_color, loaded_dicts, enabled_dicts);
+            g_strlcat(buf, loading_note, sizeof(buf));
         }
         webkit_web_view_load_html(web_view, buf, "file:///");
         g_free(escaped_query);
@@ -2069,6 +2494,33 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
             // Search will be triggered by "search-changed" signal
         }
     }
+}
+
+static void maybe_show_startup_random_word(void) {
+    if (!startup_random_word_pending || !search_entry) {
+        return;
+    }
+
+    const char *current = gtk_editable_get_text(GTK_EDITABLE(search_entry));
+    if (current && *current) {
+        startup_random_word_pending = FALSE;
+        return;
+    }
+
+    int loaded_count = 0;
+    for (DictEntry *e = all_dicts; e; e = e->next) {
+        if (e->dict && e->dict->index && e->dict->index->root && dict_entry_in_active_scope(e)) {
+            loaded_count++;
+            break;
+        }
+    }
+
+    if (loaded_count == 0) {
+        return;
+    }
+
+    startup_random_word_pending = FALSE;
+    on_random_clicked(NULL, NULL);
 }
 
 static void activate_dictionary_entry(DictEntry *e) {
@@ -2357,6 +2809,8 @@ static volatile gint loader_generation = 0;
 
 static void reload_dictionaries_from_settings(void *user_data) {
     (void)user_data;
+    gboolean discover_from_dirs = should_rescan_dictionary_dirs();
+    startup_random_word_pending = FALSE;
     g_atomic_int_inc(&loader_generation);
     if (search_execute_source_id != 0) {
         g_source_remove(search_execute_source_id);
@@ -2373,6 +2827,7 @@ static void reload_dictionaries_from_settings(void *user_data) {
     clear_sidebar_list(&dict_sidebar);
     clear_related_rows();
     clear_sidebar_list(&groups_sidebar);
+    dictionary_loading_in_progress = FALSE;
 
     // Show "Reloading..." and start async scan
     webkit_web_view_load_html(web_view,
@@ -2383,16 +2838,61 @@ static void reload_dictionaries_from_settings(void *user_data) {
     if (!active_scope_id) {
         active_scope_id = g_strdup("all");
     }
+    rebuild_dict_entries_from_settings();
+    populate_dict_sidebar();
     populate_history_sidebar();
     populate_favorites_sidebar();
     populate_groups_sidebar();
     populate_search_sidebar(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
-    start_async_dict_loading();
+    startup_loading_active = TRUE;
+    if (!start_async_dict_loading(discover_from_dirs)) {
+        startup_loading_active = FALSE;
+        finalize_dictionary_loading(FALSE, discover_from_dirs);
+    }
 }
 
 /* Request cancellation of the current loader generation (called from UI). */
 void request_loader_cancel(void) {
     g_atomic_int_inc(&loader_generation);
+}
+
+static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded) {
+    dictionary_loading_in_progress = FALSE;
+    if (sync_settings_from_loaded) {
+        sync_settings_dictionaries_from_loaded();
+    }
+    rebuild_dict_entries_from_settings();
+    extern void settings_scan_notify(const char *name, const char *path, gboolean done);
+    settings_scan_notify(NULL, NULL, TRUE);
+    if (!active_entry && all_dicts) {
+        active_entry = all_dicts;
+    }
+    populate_dict_sidebar();
+    populate_groups_sidebar();
+    populate_history_sidebar();
+    populate_favorites_sidebar();
+    populate_search_sidebar(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
+    refresh_search_results();
+
+    if (startup_loading_active) {
+        close_startup_splash();
+        if (main_window) {
+            gtk_window_present(main_window);
+        }
+    }
+
+    if (!all_dicts) {
+        webkit_web_view_load_html(web_view,
+            "<h2>No Dictionaries Found</h2>"
+            "<p>Open <b>Preferences</b> and add a dictionary directory.</p>",
+            "file:///");
+    } else if (allow_random_word) {
+        maybe_show_startup_random_word();
+        const char *current = gtk_editable_get_text(GTK_EDITABLE(search_entry));
+        if (current && strlen(current) == 0) {
+            on_random_clicked(NULL, NULL);
+        }
+    }
 }
 
 static void refresh_dictionaries_ui(void *user_data) {
@@ -2484,6 +2984,12 @@ static void populate_dict_sidebar(void) {
 
 // ------- Async loading infrastructure -------
 
+typedef enum {
+    LOAD_IDLE_STATUS = 0,
+    LOAD_IDLE_ENTRY,
+    LOAD_IDLE_DONE
+} LoadIdleKind;
+
 typedef struct {
     char **dirs;          // NULL-terminated array of directory paths to scan
     int   n_dirs;
@@ -2491,14 +2997,186 @@ typedef struct {
     int   n_manual;
     GHashTable *ignored_paths;
     gint  generation;
+    gboolean discover_from_dirs;
 } LoadThreadArgs;
 
-// Payload passed from thread to main thread via g_idle_add
 typedef struct {
+    LoadIdleKind kind;
     DictEntry *entry; // single loaded entry (next == NULL on delivery)
-    gboolean   done;  // TRUE = loading finished
     gint       generation;
+    guint      completed;
+    guint      total;
+    char      *status_text;
+    gboolean   sync_settings;
 } LoadIdleData;
+
+static gboolean loader_path_ends_with_ci(const char *path, const char *suffix) {
+    gsize path_len = path ? strlen(path) : 0;
+    gsize suffix_len = suffix ? strlen(suffix) : 0;
+    if (!path || !suffix || path_len < suffix_len) {
+        return FALSE;
+    }
+
+    return g_ascii_strcasecmp(path + path_len - suffix_len, suffix) == 0;
+}
+
+static gboolean loader_is_dsl_family_path(const char *path) {
+    return loader_path_ends_with_ci(path, ".dsl") || loader_path_ends_with_ci(path, ".dsl.dz");
+}
+
+static char *loader_dsl_family_key(const char *path) {
+    if (loader_path_ends_with_ci(path, ".dsl.dz")) {
+        return g_strndup(path, strlen(path) - 3);
+    }
+    return g_strdup(path);
+}
+
+static char *loader_dsl_preferred_variant(const char *path) {
+    if (loader_path_ends_with_ci(path, ".dsl.dz")) {
+        return g_strdup(path);
+    }
+    if (loader_path_ends_with_ci(path, ".dsl")) {
+        char *compressed = g_strconcat(path, ".dz", NULL);
+        if (g_file_test(compressed, G_FILE_TEST_EXISTS)) {
+            return compressed;
+        }
+        g_free(compressed);
+    }
+    return g_strdup(path);
+}
+
+static void loader_add_candidate_path(const char *path,
+                                      GPtrArray *out_paths,
+                                      GHashTable *seen_paths,
+                                      GHashTable *seen_dsl_families,
+                                      GHashTable *ignored_paths) {
+    if (!path || !out_paths) {
+        return;
+    }
+
+    DictFormat fmt = dict_detect_format(path);
+    if (fmt == DICT_FORMAT_UNKNOWN) {
+        return;
+    }
+
+    char *load_path = NULL;
+    char *family_key = NULL;
+
+    if (fmt == DICT_FORMAT_DSL && loader_is_dsl_family_path(path)) {
+        family_key = loader_dsl_family_key(path);
+        if (seen_dsl_families && g_hash_table_contains(seen_dsl_families, family_key)) {
+            g_free(family_key);
+            return;
+        }
+        load_path = loader_dsl_preferred_variant(path);
+    } else {
+        load_path = g_strdup(path);
+    }
+
+    if ((ignored_paths && g_hash_table_contains(ignored_paths, load_path)) ||
+        (seen_paths && g_hash_table_contains(seen_paths, load_path))) {
+        g_free(load_path);
+        g_free(family_key);
+        return;
+    }
+
+    if (seen_dsl_families && family_key) {
+        g_hash_table_add(seen_dsl_families, family_key);
+        family_key = NULL;
+    }
+
+    if (seen_paths) {
+        g_hash_table_add(seen_paths, g_strdup(load_path));
+    }
+
+    g_ptr_array_add(out_paths, load_path);
+    g_free(family_key);
+}
+
+static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
+                                                         GPtrArray *out_paths,
+                                                         GHashTable *seen_paths,
+                                                         GHashTable *seen_dsl_families,
+                                                         GHashTable *ignored_paths) {
+    if (!dirpath || !out_paths) {
+        return;
+    }
+
+    GDir *dir = g_dir_open(dirpath, 0, NULL);
+    if (!dir) {
+        return;
+    }
+
+    const char *name = NULL;
+    while ((name = g_dir_read_name(dir)) != NULL) {
+        if (name[0] == '.') {
+            continue;
+        }
+
+        char *full = g_build_filename(dirpath, name, NULL);
+        if (g_file_test(full, G_FILE_TEST_IS_DIR)) {
+            if (!loader_path_ends_with_ci(full, ".files") &&
+                !loader_path_ends_with_ci(full, ".dsl.files") &&
+                !loader_path_ends_with_ci(full, ".dsl.dz.files")) {
+                collect_dictionary_candidate_paths_recursive(full, out_paths,
+                                                            seen_paths, seen_dsl_families,
+                                                            ignored_paths);
+            }
+            g_free(full);
+            continue;
+        }
+
+        loader_add_candidate_path(full, out_paths, seen_paths, seen_dsl_families, ignored_paths);
+        g_free(full);
+    }
+
+    g_dir_close(dir);
+}
+
+static DictEntry *create_dict_entry_from_loaded(const char *path, DictFormat fmt, DictMmap *dict) {
+    if (!path || !dict) {
+        return NULL;
+    }
+
+    DictEntry *entry = calloc(1, sizeof(DictEntry));
+    entry->format = fmt;
+    entry->dict = dict;
+
+    if (dict->name && *dict->name) {
+        char *valid = g_utf8_make_valid(dict->name, -1);
+        entry->name = strdup(valid);
+        g_free(valid);
+    } else {
+        char *base = g_path_get_basename(path);
+        char *valid = g_utf8_make_valid(base, -1);
+        entry->name = strdup(valid);
+        g_free(valid);
+        g_free(base);
+    }
+
+    char *valid_path = g_utf8_make_valid(path, -1);
+    entry->path = strdup(valid_path);
+    g_free(valid_path);
+    return entry;
+}
+
+static void queue_loader_idle(LoadIdleKind kind,
+                              gint generation,
+                              guint completed,
+                              guint total,
+                              const char *status_text,
+                              DictEntry *entry,
+                              gboolean sync_settings) {
+    LoadIdleData *ld = g_new0(LoadIdleData, 1);
+    ld->kind = kind;
+    ld->generation = generation;
+    ld->completed = completed;
+    ld->total = total;
+    ld->status_text = status_text ? g_strdup(status_text) : NULL;
+    ld->entry = entry;
+    ld->sync_settings = sync_settings;
+    g_idle_add(on_dict_loaded_idle, ld);
+}
 
 static gboolean on_dict_loaded_idle(gpointer user_data) {
     LoadIdleData *ld = user_data;
@@ -2510,22 +3188,24 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
         if (ld->entry) {
             dict_loader_free(ld->entry);
         }
+        g_free(ld->status_text);
         g_free(ld);
         return G_SOURCE_REMOVE;
     }
 
-    if (!ld->done && ld->entry) {
+    update_startup_splash_progress(ld->completed, ld->total, ld->status_text);
+
+    if (ld->kind == LOAD_IDLE_ENTRY && ld->entry) {
         DictEntry *e = ld->entry;
         e->next = NULL;
 
         /* Inform settings dialog(s) of discovered entry */
-        g_printerr("[MAIN] on_dict_loaded_idle: name='%s' path='%s' gen=%d\n",
-                    e->name ? e->name : "(null)", e->path ? e->path : "(null)", ld->generation);
         settings_scan_notify(e->name ? e->name : "(Unknown)", e->path ? e->path : "", FALSE);
 
         DictConfig *cfg = app_settings ? settings_find_dictionary_by_path(app_settings, e->path) : NULL;
         if (cfg && !cfg->enabled) {
             dict_loader_free(e);
+            g_free(ld->status_text);
             g_free(ld);
             return G_SOURCE_REMOVE;
         }
@@ -2562,68 +3242,31 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
             }
         }
 
-        populate_dict_sidebar();
+        if (!active_entry && all_dicts) {
+            active_entry = all_dicts;
+        }
 
-        // Auto-select the very first dictionary
-        if (all_dicts == e && !active_entry) {
-            active_entry = e;
+        if (!startup_loading_active) {
             populate_dict_sidebar();
         }
+
+        maybe_show_startup_random_word();
     }
 
-    if (ld->done) {
-        sync_settings_dictionaries_from_loaded();
-        /* Notify any settings scan dialogs that loading is complete after
-         * settings have been updated, so open dialogs can repaint immediately. */
-        settings_scan_notify(NULL, NULL, TRUE);
-        populate_groups_sidebar();
-        populate_history_sidebar();
-        populate_favorites_sidebar();
-        populate_search_sidebar(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
-
-        // Loading complete — update welcome page if no dicts found
-        if (!all_dicts) {
-            webkit_web_view_load_html(web_view,
-                "<h2>No Dictionaries Found</h2>"
-                "<p>Open <b>Preferences</b> and add a dictionary directory.</p>",
-                "file:///");
-        } else {
-            // Do a random search on startup if nothing is there
-            const char *current = gtk_editable_get_text(GTK_EDITABLE(search_entry));
-            if (strlen(current) == 0) {
-                on_random_clicked(NULL, NULL);
-            }
-        }
+    if (ld->kind == LOAD_IDLE_DONE) {
+        finalize_dictionary_loading(TRUE, ld->sync_settings);
     }
 
+    g_free(ld->status_text);
     g_free(ld);
     return G_SOURCE_REMOVE;
 }
 
-static void on_dict_found_streaming(DictEntry *e, void *user_data) {
-    LoadThreadArgs *args = user_data;
-    if (!args) {
-        if (e) {
-            dict_loader_free(e);
-        }
-        return;
-    }
-
-    if (e && e->path && args->ignored_paths &&
-        g_hash_table_contains(args->ignored_paths, e->path)) {
-        dict_loader_free(e);
-        return;
-    }
-
-    LoadIdleData *ld = g_new0(LoadIdleData, 1);
-    ld->entry = e;
-    ld->done  = FALSE;
-    ld->generation = args->generation;
-    g_idle_add(on_dict_loaded_idle, ld);
-}
-
 static gpointer dict_load_thread(gpointer user_data) {
     LoadThreadArgs *args = user_data;
+    GPtrArray *candidate_paths = g_ptr_array_new_with_free_func(g_free);
+    GHashTable *seen_paths = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
     g_mutex_lock(&dict_loader_mutex);
     if (args->generation != g_atomic_int_get(&loader_generation)) {
@@ -2632,54 +3275,67 @@ static gpointer dict_load_thread(gpointer user_data) {
     }
 
     for (int i = 0; i < args->n_manual; i++) {
-        if (args->generation != g_atomic_int_get(&loader_generation)) break;
         const char *path = args->manual_paths[i];
-        if (args->ignored_paths && g_hash_table_contains(args->ignored_paths, path)) {
-            continue;
-        }
-        DictFormat fmt = dict_detect_format(path);
-        DictMmap *dict = dict_load_any(path, fmt, &loader_generation, args->generation);
-        if (!dict) {
-            continue;
-        }
-
-        DictEntry *entry = calloc(1, sizeof(DictEntry));
-        entry->path = strdup(path);
-        entry->format = fmt;
-        entry->dict = dict;
-        if (dict->name) {
-            char *valid = g_utf8_make_valid(dict->name, -1);
-            entry->name = strdup(valid);
-            g_free(valid);
-        } else {
-            char *base = g_path_get_basename(path);
-            char *valid = g_utf8_make_valid(base, -1);
-            entry->name = strdup(valid);
-            g_free(valid);
-            g_free(base);
-        }
-
-        char *valid_path = g_utf8_make_valid(path, -1);
-        entry->path = strdup(valid_path);
-        g_free(valid_path);
-        on_dict_found_streaming(entry, args);
+        loader_add_candidate_path(path, candidate_paths, seen_paths, seen_dsl_families,
+                                  args->ignored_paths);
     }
 
     for (int i = 0; i < args->n_dirs; i++) {
         if (args->generation != g_atomic_int_get(&loader_generation)) break;
-        dict_loader_scan_directory_streaming(args->dirs[i], on_dict_found_streaming, args, &loader_generation, args->generation);
+        collect_dictionary_candidate_paths_recursive(args->dirs[i], candidate_paths,
+                                                    seen_paths, seen_dsl_families,
+                                                    args->ignored_paths);
+    }
+
+    guint total_candidates = candidate_paths->len;
+    queue_loader_idle(LOAD_IDLE_STATUS, args->generation, 0, total_candidates,
+                      total_candidates > 0 ? "Preparing Diction..." : "Preparing dictionary library...",
+                      NULL, args->discover_from_dirs);
+
+    for (guint i = 0; i < candidate_paths->len; i++) {
+        if (args->generation != g_atomic_int_get(&loader_generation)) {
+            break;
+        }
+
+        const char *path = g_ptr_array_index(candidate_paths, i);
+        char *basename = g_path_get_basename(path);
+        char *status = g_strdup_printf("Loading %s...", basename ? basename : "dictionary");
+        queue_loader_idle(LOAD_IDLE_STATUS, args->generation, i, total_candidates, status, NULL,
+                          args->discover_from_dirs);
+
+        DictFormat fmt = dict_detect_format(path);
+        DictMmap *dict = dict_load_any(path, fmt, &loader_generation, args->generation);
+        if (dict) {
+            DictEntry *entry = create_dict_entry_from_loaded(path, fmt, dict);
+            queue_loader_idle(LOAD_IDLE_ENTRY, args->generation, i + 1, total_candidates, status, entry,
+                              args->discover_from_dirs);
+        } else {
+            queue_loader_idle(LOAD_IDLE_STATUS, args->generation, i + 1, total_candidates, status, NULL,
+                              args->discover_from_dirs);
+        }
+
+        g_free(status);
+        g_free(basename);
     }
 
     g_mutex_unlock(&dict_loader_mutex);
 
 cleanup:
-    // Signal completion
-    LoadIdleData *done_ld = g_new0(LoadIdleData, 1);
-    done_ld->done = TRUE;
-    done_ld->generation = args->generation;
-    g_idle_add(on_dict_loaded_idle, done_ld);
+    queue_loader_idle(LOAD_IDLE_DONE, args->generation,
+                      candidate_paths ? candidate_paths->len : 0,
+                      candidate_paths ? candidate_paths->len : 0,
+                      "Opening Diction...", NULL, args->discover_from_dirs);
 
     // Free args
+    if (candidate_paths) {
+        g_ptr_array_free(candidate_paths, TRUE);
+    }
+    if (seen_dsl_families) {
+        g_hash_table_unref(seen_dsl_families);
+    }
+    if (seen_paths) {
+        g_hash_table_unref(seen_paths);
+    }
     for (int i = 0; i < args->n_dirs; i++)
         g_free(args->dirs[i]);
     g_free(args->dirs);
@@ -2693,12 +3349,13 @@ cleanup:
     return NULL;
 }
 
-static void start_async_dict_loading(void) {
+static gboolean start_async_dict_loading(gboolean discover_from_dirs) {
     if (!app_settings)
-        return;
+        return FALSE;
 
     LoadThreadArgs *args = g_new0(LoadThreadArgs, 1);
-    args->n_dirs = (int)app_settings->dictionary_dirs->len;
+    args->discover_from_dirs = discover_from_dirs;
+    args->n_dirs = discover_from_dirs ? (int)app_settings->dictionary_dirs->len : 0;
     args->dirs   = g_new(char *, args->n_dirs + 1);
     for (int i = 0; i < args->n_dirs; i++)
         args->dirs[i] = g_strdup(g_ptr_array_index(app_settings->dictionary_dirs, i));
@@ -2707,9 +3364,13 @@ static void start_async_dict_loading(void) {
     GPtrArray *manual_paths = g_ptr_array_new_with_free_func(g_free);
     for (guint i = 0; i < app_settings->dictionaries->len; i++) {
         DictConfig *cfg = g_ptr_array_index(app_settings->dictionaries, i);
-        if ((g_strcmp0(cfg->source, "manual") == 0 ||
-             g_strcmp0(cfg->source, "imported") == 0) &&
-            cfg->enabled && cfg->path) {
+        if (!cfg || !cfg->enabled || !cfg->path || !*cfg->path) {
+            continue;
+        }
+
+        if (!discover_from_dirs ||
+            g_strcmp0(cfg->source, "manual") == 0 ||
+            g_strcmp0(cfg->source, "imported") == 0) {
             g_ptr_array_add(manual_paths, g_strdup(cfg->path));
         }
     }
@@ -2731,18 +3392,24 @@ static void start_async_dict_loading(void) {
     if (args->n_dirs == 0 && args->n_manual == 0) {
         g_free(args->dirs);
         g_free(args->manual_paths);
+        if (args->ignored_paths) {
+            g_hash_table_unref(args->ignored_paths);
+        }
         g_free(args);
-        return;
+        return FALSE;
     }
 
     args->generation = g_atomic_int_get(&loader_generation);
+    dictionary_loading_in_progress = TRUE;
     GThread *thread = g_thread_new("dict-loader", dict_load_thread, args);
     g_thread_unref(thread); // fire-and-forget
+    return TRUE;
 }
 
 static void on_activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
     AdwApplicationWindow *window = ADW_APPLICATION_WINDOW(adw_application_window_new(app));
+    main_window = GTK_WINDOW(window);
     gtk_window_set_title(GTK_WINDOW(window), "Diction");
     gtk_window_set_default_size(GTK_WINDOW(window), 1000, 650);
 
@@ -2947,6 +3614,13 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     adw_toolbar_view_set_content(toolbar_view, web_scroll);
     adw_overlay_split_view_set_content(ADW_OVERLAY_SPLIT_VIEW(split_view), GTK_WIDGET(toolbar_view));
 
+    gboolean had_cached_entries = FALSE;
+    gboolean discover_from_dirs = FALSE;
+    if (!all_dicts && app_settings) {
+        had_cached_entries = rebuild_dict_entries_from_settings() > 0;
+        discover_from_dirs = should_rescan_dictionary_dirs();
+    }
+
     /* Populate sidebar */
     populate_dict_sidebar();
     populate_history_sidebar();
@@ -2994,18 +3668,30 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
     update_theme_colors();
 
-    /* Show the window FIRST, then start background loading */
     webkit_web_view_load_html(web_view,
         "<html><body style='font-family: sans-serif; text-align: center; margin-top: 3em; opacity: 0.6;'>"
         "<h2>Loading dictionaries…</h2><p>Please wait.</p>"
         "</body></html>", "file:///");
 
-    gtk_window_present(GTK_WINDOW(window));
-
     // Start async loading if we have settings-based dirs
-    if (!all_dicts) {
-        start_async_dict_loading();
+    if (!all_dicts || had_cached_entries) {
+        startup_loading_active = TRUE;
+        startup_random_word_pending = (!search_entry ||
+                                       strlen(gtk_editable_get_text(GTK_EDITABLE(search_entry))) == 0);
+        if (start_async_dict_loading(discover_from_dirs)) {
+            if (had_cached_entries) {
+                gtk_window_present(GTK_WINDOW(window));
+            } else {
+                show_startup_splash(app);
+            }
+        } else {
+            startup_loading_active = FALSE;
+            startup_random_word_pending = FALSE;
+            finalize_dictionary_loading(TRUE, discover_from_dirs);
+            gtk_window_present(GTK_WINDOW(window));
+        }
     } else {
+        startup_random_word_pending = FALSE;
         // CLI-mode: dicts already loaded synchronously, just populate
         populate_dict_sidebar();
         if (all_dicts) {
@@ -3015,6 +3701,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         webkit_web_view_load_html(web_view,
             "<h2>Welcome to Diction</h2>"
             "<p>Select a dictionary from the sidebar and start searching.</p>", "file:///");
+        gtk_window_present(GTK_WINDOW(window));
     }
 
     /* Debug: auto-open preferences for integrated scanning if requested. */
