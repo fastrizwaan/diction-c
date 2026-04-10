@@ -19,32 +19,9 @@
 #include <fcntl.h>
 #include <glib.h>
 #include <ctype.h>
+#include "dict-cache.h"
 
-static const char* get_cache_base_dir(void) {
-    static const char *cache_dir = NULL;
-    if (!cache_dir) cache_dir = g_get_user_cache_dir();
-    return cache_dir;
-}
-
-static char* get_cache_dir_path(void) {
-    const char *base = get_cache_base_dir();
-    return g_build_filename(base, "diction", "dicts", NULL);
-}
-
-static char* get_cached_dict_path(const char *original_path) {
-    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, original_path, -1);
-    const char *base = get_cache_base_dir();
-    char *path = g_build_filename(base, "diction", "dicts", hash, NULL);
-    g_free(hash);
-    return path;
-}
-
-static gboolean ensure_cache_directory(void) {
-    char *cache_dir = get_cache_dir_path();
-    int ret = g_mkdir_with_parents(cache_dir, 0755);
-    g_free(cache_dir);
-    return ret == 0;
-}
+/* IFO uses multi-source cache validation since it has .ifo + .idx + .dict */
 
 static gboolean is_cache_valid_for_sources(const char *cache_path, const char **sources, size_t source_count) {
     struct stat cache_st;
@@ -62,23 +39,8 @@ static gboolean is_cache_valid_for_sources(const char *cache_path, const char **
     return TRUE;
 }
 
-static void sync_cache_mtime(const char *cache_path, const char **sources, size_t source_count) {
-    time_t latest = 0;
+/* sync_cache_mtime: Use dict_cache_sync_mtime from dict-cache.h instead */
 
-    for (size_t i = 0; i < source_count; i++) {
-        struct stat src_st;
-        if (stat(sources[i], &src_st) == 0 && src_st.st_mtime > latest) {
-            latest = src_st.st_mtime;
-        }
-    }
-
-    if (latest > 0) {
-        struct utimbuf times;
-        times.actime = latest;
-        times.modtime = latest;
-        utime(cache_path, &times);
-    }
-}
 
 static uint32_t read_u32be(const unsigned char *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -492,31 +454,16 @@ static DictMmap *open_cached_stardict(const char *cache_path, char *bookname, ch
     dict->size = st.st_size;
     dict->name = bookname;
     dict->resource_dir = resource_dir;
-    dict->index = splay_tree_new(dict->data, dict->size);
+    dict->index = flat_index_open(dict->data, dict->size);
 
-    uint64_t count = *(const uint64_t *)dict->data;
-    size_t index_size = (size_t)count * sizeof(TreeEntry);
-    if (count > 0 && index_size + 8 <= dict->size) {
-        size_t index_off = dict->size - index_size;
-        TreeEntry *tree_entries = (TreeEntry *)(dict->data + index_off);
-        /* Validate entries before use to avoid reading invalid offsets */
-        size_t data_region_end = dict->size - index_size;
-        gboolean valid_index = TRUE;
-        for (uint64_t i = 0; i < count; i++) {
-            int64_t h_off = tree_entries[i].h_off;
-            uint64_t h_len = tree_entries[i].h_len;
-            int64_t d_off = tree_entries[i].d_off;
-            uint64_t d_len = tree_entries[i].d_len;
-            if (h_off < 8 || (uint64_t)h_off >= data_region_end) { valid_index = FALSE; break; }
-            if (d_off < 8 || (uint64_t)d_off >= data_region_end) { valid_index = FALSE; break; }
-            if (h_len == 0 || d_len == 0) { valid_index = FALSE; break; }
-            if ((uint64_t)h_off + h_len > data_region_end) { valid_index = FALSE; break; }
-            if ((uint64_t)d_off + d_len > data_region_end) { valid_index = FALSE; break; }
-        }
-        if (valid_index) {
-            insert_balanced(dict->index, tree_entries, 0, (int)count - 1);
-        } else {
+    /* Validate the index loaded from cache */
+    if (dict->index && dict->index->count > 0) {
+        if (!flat_index_validate(dict->index)) {
             fprintf(stderr, "[IFO] Cache index validation failed for %s — rebuilding index.\n", cache_path);
+            flat_index_close(dict->index);
+            dict->index = calloc(1, sizeof(FlatIndex));
+            dict->index->mmap_data = dict->data;
+            dict->index->mmap_size = dict->size;
         }
     }
 
@@ -556,8 +503,8 @@ DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint 
         return NULL;
     }
 
-    ensure_cache_directory();
-    char *cache_path = get_cached_dict_path(ifo_path);
+    dict_cache_ensure_dir();
+    char *cache_path = dict_cache_path_for(ifo_path);
     const char *sources[] = { ifo_path, idx_path, dict_path };
 
     if (is_cache_valid_for_sources(cache_path, sources, G_N_ELEMENTS(sources))) {
@@ -615,15 +562,36 @@ DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint 
     gboolean built = build_stardict_cache(cache_file, idx_data, idx_size, dict_raw, dict_raw_len,
                                           sametypesequence, &entries, &entry_count);
 
-    if (built) {
-        fwrite(entries, sizeof(TreeEntry), entry_count, cache_file);
-        fseek(cache_file, 0, SEEK_SET);
-        uint64_t final_count = (uint64_t)entry_count;
-        fwrite(&final_count, 8, 1, cache_file);
-    }
+    if (built && entry_count > 0 && entries) {
+        /* Flush data portion (without index yet), then read it back for sorting */
+        long data_end = ftell(cache_file);
+        fclose(cache_file);
 
-    fclose(cache_file);
-    sync_cache_mtime(cache_path, sources, G_N_ELEMENTS(sources));
+        /* Read the data portion to use for sorting headwords */
+        FILE *rf = fopen(cache_path, "rb");
+        if (rf) {
+            char *cache_data = malloc(data_end > 0 ? data_end : 1);
+            if (cache_data && fread(cache_data, 1, data_end, rf) == (size_t)data_end) {
+                flat_index_sort_entries(entries, entry_count, cache_data, data_end);
+            }
+            free(cache_data);
+            fclose(rf);
+        }
+
+        /* Reopen to append sorted index */
+        cache_file = fopen(cache_path, "r+b");
+        if (cache_file) {
+            fseek(cache_file, data_end, SEEK_SET);
+            fwrite(entries, sizeof(TreeEntry), entry_count, cache_file);
+            fseek(cache_file, 0, SEEK_SET);
+            uint64_t final_count = (uint64_t)entry_count;
+            fwrite(&final_count, 8, 1, cache_file);
+            fclose(cache_file);
+        }
+    } else {
+        fclose(cache_file);
+    }
+    dict_cache_sync_mtime(cache_path, sources, G_N_ELEMENTS(sources));
 
     g_free(entries);
     g_free(dict_raw);

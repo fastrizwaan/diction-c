@@ -390,6 +390,7 @@ typedef struct {
     GtkWidget *close_btn;
     volatile gint generation; /* used for cancellation */
     int found_count;
+    int processed_count;
     int total_dirs;
     gboolean call_reload;
     gboolean cancelled;
@@ -403,7 +404,7 @@ typedef struct {
     ScanContext *ctx;
     char *name;
     char *path;
-    gboolean done;
+    int event_type; /* DictLoaderEventType or -1 for end-of-scan */
     gboolean is_progress_update;
     gboolean is_status_update;
     int progress;
@@ -437,38 +438,56 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row), buf);
             }
         }
-    } else if (!sid->done) {
-        /* If a prelisted row exists for this path, update it instead of
-         * creating a duplicate entry. */
+    } else if (sid->event_type == DICT_LOADER_EVENT_DISCOVERED) {
+        /* Add a new dictionary row as soon as it's found. */
         if (sid->path && ctx->row_map) {
             gpointer existing = g_hash_table_lookup(ctx->row_map, sid->path);
             if (existing) {
-                GtkWidget *row = existing;
-                if (sid->name && *sid->name) {
-                    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
-                }
-                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sid->path);
-                g_free(sid->name);
-                g_free(sid->path);
-                g_free(sid);
+                g_free(sid->name); g_free(sid->path); g_free(sid);
                 return G_SOURCE_REMOVE;
             }
         }
 
         GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sid->path);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Processing...");
         gtk_list_box_append(ctx->list, GTK_WIDGET(row));
-        /* store mapping path -> row for progress updates */
+        
         if (sid->path) {
             if (!ctx->row_map) ctx->row_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
             g_hash_table_replace(ctx->row_map, g_strdup(sid->path), row);
         }
         ctx->found_count++;
-        char buf[128];
-        g_snprintf(buf, sizeof(buf), "%d dictionaries found", ctx->found_count);
+        
+        char buf[256];
+        g_snprintf(buf, sizeof(buf), "Found %d, processing %d of %d", 
+                  ctx->found_count, ctx->processed_count, ctx->found_count);
         gtk_label_set_text(GTK_LABEL(ctx->status_label), buf);
-    } else {
+
+    } else if (sid->event_type == DICT_LOADER_EVENT_FINISHED) {
+        /* Update row with final name and tick mark when finished. */
+        if (sid->path && ctx->row_map) {
+            gpointer val = g_hash_table_lookup(ctx->row_map, sid->path);
+            if (val) {
+                GtkWidget *row = val;
+                if (sid->name && *sid->name) {
+                    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
+                }
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sid->path);
+                
+                GtkWidget *check = gtk_image_new_from_icon_name("object-select-symbolic");
+                gtk_widget_add_css_class(check, "success"); // Green color in many themes
+                adw_action_row_add_suffix(ADW_ACTION_ROW(row), check);
+            }
+        }
+        ctx->processed_count++;
+
+        char buf[256];
+        g_snprintf(buf, sizeof(buf), "Found %d, processing %d of %d", 
+                  ctx->found_count, ctx->processed_count, ctx->found_count);
+        gtk_label_set_text(GTK_LABEL(ctx->status_label), buf);
+
+    } else if (sid->event_type == -1) {
         /* Scan finished */
         gtk_spinner_stop(GTK_SPINNER(ctx->spinner));
         char buf[256];
@@ -494,24 +513,26 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
-static void scan_worker_callback(DictEntry *entry, void *user_data) {
+static void scan_worker_callback(DictEntry *entry, DictLoaderEventType event, void *user_data) {
     ScanContext *ctx = user_data;
-    if (!entry) return;
+    if (!entry && event != DICT_LOADER_EVENT_FAILED) return;
 
     /* Copy name/path for main-thread UI update */
-    char *name_copy = entry->name ? g_strdup(entry->name) : g_strdup("(Unknown)");
+    char *name_copy = (entry && entry->name) ? g_strdup(entry->name) : g_strdup("(Unknown)");
     /* Use canonicalized path so progress updates match the stored key */
-    char *path_copy = normalize_scan_path(entry->path);
+    char *path_copy = (entry && entry->path) ? normalize_scan_path(entry->path) : g_strdup("");
 
     ScanIdleData *sid = g_new0(ScanIdleData, 1);
     sid->ctx = ctx;
     sid->name = name_copy;
     sid->path = path_copy;
-    sid->done = FALSE;
+    sid->event_type = (int)event;
     g_idle_add(scan_idle_add_entry, sid);
 
     /* Free the loaded entry (we don't keep the mmap in settings dialog) */
-    dict_loader_free(entry);
+    if (event == DICT_LOADER_EVENT_FINISHED && entry) {
+        dict_loader_free(entry);
+    }
 }
 
 static gpointer scan_thread_func(gpointer user_data) {
@@ -533,8 +554,7 @@ static gpointer scan_thread_func(gpointer user_data) {
         st->ctx = ctx;
         st->name = g_strdup(status_buf);
         st->path = g_strdup("");
-        st->done = FALSE;
-        st->is_status_update = TRUE;
+        st->event_type = (int)DICT_LOADER_EVENT_STARTED;
         g_idle_add(scan_idle_add_entry, st);
 
         dict_loader_scan_directory_streaming(args->dirs[i], scan_worker_callback, ctx, &ctx->generation, expected);
@@ -545,7 +565,7 @@ static gpointer scan_thread_func(gpointer user_data) {
     done->ctx = ctx;
     done->name = g_strdup("done");
     done->path = g_strdup("");
-    done->done = TRUE;
+    done->event_type = -1;
     g_idle_add(scan_idle_add_entry, done);
 
     /* Free thread args */
@@ -591,11 +611,9 @@ static void on_scan_dialog_closed(ScanContext *ctx) {
 }
 
 /* Called by main loader to notify UI of discovered dictionaries. */
-void settings_scan_notify(const char *name, const char *path, gboolean done) {
+void settings_scan_notify(const char *name, const char *path, int event_type) {
     if (!active_scan_contexts) return;
-    /* Debug: log incoming notifications to help diagnose missing titles */
-    g_printerr("[SETTINGS SCAN NOTIFY] name='%s' path='%s' done=%d\n",
-                name ? name : "(null)", path ? path : "(null)", done ? 1 : 0);
+    
     /* Precompute a canonical path used for matching / row keys */
     char *canonical_path = normalize_scan_path(path);
     for (GList *l = active_scan_contexts; l; l = l->next) {
@@ -605,7 +623,7 @@ void settings_scan_notify(const char *name, const char *path, gboolean done) {
 
         /* If this context has a dir filter, ensure canonical path matches one of them */
         gboolean match = FALSE;
-        if (done) match = TRUE; /* always notify completion */
+        if (event_type == -1) match = TRUE; /* always notify completion */
         else if (!canonical_path || *canonical_path == '\0') match = FALSE;
         else if (!ctx->scan_dirs || ctx->n_scan_dirs == 0) match = TRUE;
         else {
@@ -620,7 +638,7 @@ void settings_scan_notify(const char *name, const char *path, gboolean done) {
         sid->name = name ? g_strdup(name) : g_strdup("");
         /* Use the precomputed canonical path as the row key */
         sid->path = g_strdup(canonical_path);
-        sid->done = done ? TRUE : FALSE;
+        sid->event_type = event_type;
         g_idle_add(scan_idle_add_entry, sid);
     }
     g_free(canonical_path);
@@ -652,7 +670,7 @@ void settings_scan_progress_notify(const char *path, int percent) {
         sid->ctx = ctx;
         sid->name = g_strdup("");
         sid->path = g_strdup(canonical_path);
-        sid->done = FALSE;
+        sid->event_type = -1; // Dummy type for progress notification
         sid->is_progress_update = TRUE;
         sid->progress = percent;
         g_idle_add(scan_idle_add_entry, sid);
@@ -745,61 +763,8 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
     ctx->total_dirs = n_dirs;
     ctx->call_reload = call_reload;
 
-    /* Pre-list supported files in the requested directories so the user sees
-     * everything that will be processed before extraction begins. */
-    if (dirs && n_dirs > 0) {
-        /* Helper: check suffixes */
-        for (int di = 0; di < n_dirs; di++) {
-            const char *dpath = dirs[di];
-            if (!dpath) continue;
-            if (!g_file_test(dpath, G_FILE_TEST_IS_DIR)) continue;
-            GDir *gd = g_dir_open(dpath, 0, NULL);
-            if (!gd) continue;
-            const char *ename;
-            while ((ename = g_dir_read_name(gd)) != NULL) {
-                if (ename[0] == '.') continue;
-                /* Case-insensitive suffix check */
-                char *low = g_ascii_strdown(ename, -1);
-                gboolean ok = FALSE;
-                if (g_str_has_suffix(low, ".dsl") || g_str_has_suffix(low, ".dsl.dz") ||
-                    g_str_has_suffix(low, ".mdx") || g_str_has_suffix(low, ".ifo") ||
-                    g_str_has_suffix(low, ".bgl")) ok = TRUE;
-                g_free(low);
-                if (!ok) continue;
-
-                char *full = g_build_filename(dpath, ename, NULL);
-                char *canon = normalize_scan_path(full);
-                if (!canon) { g_free(full); continue; }
-                if (data && data->settings && settings_is_dictionary_ignored(data->settings, canon)) {
-                    g_free(full);
-                    g_free(canon);
-                    continue;
-                }
-
-                /* Create a pending row if not already present */
-                if (!ctx->row_map) ctx->row_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-                if (!g_hash_table_lookup(ctx->row_map, canon)) {
-                    GtkWidget *row = new_plain_action_row();
-                    char *b = g_path_get_basename(full);
-                    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), b);
-                    g_free(b);
-                    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), canon);
-                    gtk_list_box_append(ctx->list, GTK_WIDGET(row));
-                    g_hash_table_replace(ctx->row_map, g_strdup(canon), row);
-                    ctx->found_count++;
-                }
-
-                g_free(full);
-                g_free(canon);
-            }
-            g_dir_close(gd);
-        }
-        char buf[128];
-        g_snprintf(buf, sizeof(buf), "%d dictionaries listed", ctx->found_count);
-        gtk_label_set_text(GTK_LABEL(ctx->status_label), buf);
-    }
-
-    /* Wire buttons */
+    /* Present dialog and either integrate with the main loader or
+     * perform a local scan depending on `call_reload`. */
     g_signal_connect(cancel_btn, "clicked", G_CALLBACK(on_scan_cancel_clicked), ctx);
     g_signal_connect(close_btn, "clicked", G_CALLBACK(on_scan_close_clicked), ctx);
 

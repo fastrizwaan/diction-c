@@ -212,11 +212,32 @@ SplayNode* splay_tree_successor(SplayNode *node) {
     return y;
 }
 
-static void free_nodes(SplayNode *node) {
-    if (node != NULL) {
-        free_nodes(node->left);
-        free_nodes(node->right);
-        free(node);
+/* Iterative post-order free — avoids stack overflow with large trees */
+static void free_nodes(SplayNode *root) {
+    SplayNode *current = root;
+    while (current) {
+        if (!current->left) {
+            SplayNode *tmp = current->right;
+            free(current);
+            current = tmp;
+        } else {
+            /* Find rightmost node in left subtree */
+            SplayNode *pred = current->left;
+            while (pred->right && pred->right != current)
+                pred = pred->right;
+            if (!pred->right) {
+                /* Thread it */
+                pred->right = current;
+                SplayNode *tmp = current->left;
+                current->left = NULL; /* detach */
+                current = tmp;
+            } else {
+                pred->right = NULL;
+                SplayNode *tmp = current->right;
+                free(current);
+                current = tmp;
+            }
+        }
     }
 }
 

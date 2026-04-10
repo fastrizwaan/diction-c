@@ -1,28 +1,26 @@
 #pragma once
 
-#include "splay-tree.h"
+#include "flat-index.h"
+#include "resource-reader.h"
 #include <glib.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
 
-typedef struct {
-    int64_t h_off;
-    uint64_t h_len;
-    int64_t d_off;
-    uint64_t d_len;
-} TreeEntry;
+/* Re-export TreeEntry as alias for FlatTreeEntry for cache-building code */
+typedef FlatTreeEntry TreeEntry;
 
 typedef struct DictMmap {
     int fd;
     FILE *tmp_file;  // Used for temporary decompression (NULL for cached dicts)
     const char *data;
     size_t size;
-    SplayTree *index;
+    FlatIndex *index;
     char *name;
     char *source_dir;
     char *resource_dir;
     char *mdx_stylesheet;
+    ResourceReader *resource_reader; /* lazy ZIP/MDD resource access */
 } DictMmap;
 
 /* Load/mmap a dictionary. `cancel_flag` may be NULL; if non-NULL the
@@ -32,4 +30,3 @@ DictMmap* parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
 DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expected);
 DictMmap* parse_stardict(const char *path, volatile gint *cancel_flag, gint expected);
 void dict_mmap_close(DictMmap *dict);
-void insert_balanced(SplayTree *t, TreeEntry *e, int start, int end);

@@ -19,6 +19,9 @@ archive_dep = dependency('libarchive')
 srcs = [
   'src/main.c',
   'src/splay-tree.c',
+  'src/flat-index.c',
+  'src/dict-cache.c',
+  'src/resource-reader.c',
   'src/dict-mmap.c',
   'src/dict-loader.c',
   'src/dict-mdx.c',

@@ -1,4 +1,5 @@
 #include "dict-render.h"
+#include "resource-reader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -879,6 +880,13 @@ static void append_dsl_media_reference(StrBuf *b,
     g_free(clean);
 }
 
+/* Thread-local resource reader for on-demand archive extraction */
+static __thread ResourceReader *tl_resource_reader = NULL;
+
+void dict_render_set_resource_reader(ResourceReader *reader) {
+    tl_resource_reader = reader;
+}
+
 static char *resolve_local_resource_path(const char *resource_dir, const char *source_dir, const char *value) {
     if (!value) {
         return NULL;
@@ -899,11 +907,28 @@ static char *resolve_local_resource_path(const char *resource_dir, const char *s
 
     if (resource_dir) {
         path = g_build_filename(resource_dir, normalized, NULL);
-        if (g_file_test(path, G_FILE_TEST_EXISTS) || !source_dir) {
+        if (g_file_test(path, G_FILE_TEST_EXISTS)) {
             g_free(normalized);
             return path;
         }
         g_free(path);
+        path = NULL;
+    }
+
+    /* Phase 2: Try on-demand extraction from archive */
+    if (tl_resource_reader) {
+        char *extracted = resource_reader_get(tl_resource_reader, normalized);
+        if (extracted) {
+            g_free(normalized);
+            return extracted;
+        }
+    }
+
+    /* Fallback: return resource_dir path even if file doesn't exist */
+    if (resource_dir && !source_dir) {
+        path = g_build_filename(resource_dir, normalized, NULL);
+        g_free(normalized);
+        return path;
     }
 
     g_free(normalized);

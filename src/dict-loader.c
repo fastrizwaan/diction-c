@@ -178,6 +178,21 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
             load_path = preferred_path;
         }
 
+        /* Signal discovery */
+        if (callback) {
+            DictEntry discovery_entry = {0};
+            char *base = basename_noext(load_path);
+            discovery_entry.name = base;
+            discovery_entry.path = (char*)load_path;
+            discovery_entry.format = fmt;
+            callback(&discovery_entry, DICT_LOADER_EVENT_DISCOVERED, user_data);
+            free(base);
+        }
+
+        if (callback) {
+             callback(NULL, DICT_LOADER_EVENT_STARTED, user_data);
+        }
+
         DictMmap *loaded = dict_load_any(load_path, fmt, cancel_flag, expected_generation);
         if (!loaded && fallback_path && g_strcmp0(fallback_path, load_path) != 0) {
             loaded = dict_load_any(fallback_path, fmt, cancel_flag, expected_generation);
@@ -186,6 +201,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
             }
         }
         if (!loaded) {
+            if (callback) callback(NULL, DICT_LOADER_EVENT_FAILED, user_data);
             g_free(family_key);
             g_free(preferred_path);
             g_free(fallback_path);
@@ -221,10 +237,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
         entry->dict = loaded;
 
         if (callback) {
-            /* Debug: report created entry before callback */
-            g_printerr("[DICT LOADER] Created entry name='%s' path='%s'\n",
-                        entry->name ? entry->name : "(null)", entry->path ? entry->path : "(null)");
-            callback(entry, user_data);
+            callback(entry, DICT_LOADER_EVENT_FINISHED, user_data);
         }
 
         if (head) {

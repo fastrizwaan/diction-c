@@ -1,5 +1,9 @@
 #include "dict-loader.h"
 
+/* Forward declaration for lazy resource loading (Phase 2) */
+typedef struct ResourceReader ResourceReader;
+void dict_render_set_resource_reader(ResourceReader *reader);
+
 /**
  * Render DSL tags inside an entry segment to straightforward HTML.
  * The resulting string must be freed by the caller.

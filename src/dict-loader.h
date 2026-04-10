@@ -22,8 +22,16 @@ typedef struct DictEntry {
     struct DictEntry *next;
 } DictEntry;
 
+/* Event types for DictLoaderCallback */
+typedef enum {
+    DICT_LOADER_EVENT_DISCOVERED, /* Found a potential dictionary file */
+    DICT_LOADER_EVENT_STARTED,    /* Started loading/indexing header */
+    DICT_LOADER_EVENT_FINISHED,   /* Successfully loaded/indexed */
+    DICT_LOADER_EVENT_FAILED      /* Failed to load */
+} DictLoaderEventType;
+
 /* Callback for streaming loader: called for each dictionary found */
-typedef void (*DictLoaderCallback)(DictEntry *entry, void *user_data);
+typedef void (*DictLoaderCallback)(DictEntry *entry, DictLoaderEventType event, void *user_data);
 
 /* Scan a directory recursively for supported dictionary files.
  * Returns a linked list of DictEntry. Caller owns the list. */

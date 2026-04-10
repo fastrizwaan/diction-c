@@ -1,4 +1,6 @@
 #include "dict-mmap.h"
+#include "flat-index.h"
+#include "resource-reader.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,15 +15,9 @@
 #include <glib/gstdio.h>
 #include <archive.h>
 #include <archive_entry.h>
+#include "dict-cache.h"
 
-void insert_balanced(SplayTree *t, TreeEntry *e, int start, int end) {
-    if (start > end) return;
-    int mid = start + (end - start) / 2;
-    if (e[mid].h_len > 0)
-        splay_tree_insert(t, (size_t)e[mid].h_off, (size_t)e[mid].h_len, (size_t)e[mid].d_off, (size_t)e[mid].d_len);
-    insert_balanced(t, e, start, mid - 1);
-    insert_balanced(t, e, mid + 1, end);
-}
+/* insert_balanced removed — flat index uses sorted array + binary search */
 
 /* ── Multi-headword aware DSL parser ──────────────────────
  * DSL format allows N consecutive non-indented lines as headwords
@@ -35,309 +31,7 @@ void insert_balanced(SplayTree *t, TreeEntry *e, int start, int end) {
  */
 
 // Cache directory helpers
-static const char* get_cache_base_dir(void) {
-    static const char *cache_dir = NULL;
-    if (!cache_dir) {
-        cache_dir = g_get_user_cache_dir();
-    }
-    return cache_dir;
-}
 
-static char* get_cache_dir_path(void) {
-    const char *base = get_cache_base_dir();
-    return g_build_filename(base, "diction", "dicts", NULL);
-}
-
-static char* get_cached_dict_path(const char *original_path) {
-    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, original_path, -1);
-    const char *base = get_cache_base_dir();
-    char *path = g_build_filename(base, "diction", "dicts", hash, NULL);
-    g_free(hash);
-    return path;
-}
-
-static gboolean is_cache_valid(const char *cache_path, const char *original_path) {
-    struct stat cache_st, orig_st;
-
-    if (stat(cache_path, &cache_st) != 0) {
-        return FALSE;
-    }
-    if (stat(original_path, &orig_st) != 0) {
-        return FALSE;
-    }
-
-    // Cache is valid if it's newer than the original
-    return cache_st.st_mtime >= orig_st.st_mtime;
-}
-
-static gboolean ensure_cache_directory(void) {
-    char *cache_dir = get_cache_dir_path();
-    int ret = g_mkdir_with_parents(cache_dir, 0755);
-    g_free(cache_dir);
-    return ret == 0;
-}
-
-static char *get_resource_cache_dir_path(const char *original_path) {
-    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, original_path, -1);
-    const char *base = get_cache_base_dir();
-    char *path = g_build_filename(base, "diction", "resources", hash, NULL);
-    g_free(hash);
-    return path;
-}
-
-static char *get_resource_stamp_path(const char *resource_dir) {
-    return g_build_filename(resource_dir, ".diction-resource-stamp", NULL);
-}
-
-static gboolean ensure_resource_cache_directory(const char *resource_dir) {
-    return g_mkdir_with_parents(resource_dir, 0755) == 0;
-}
-
-static gboolean dir_has_visible_files(const char *dir_path) {
-    GDir *dir = g_dir_open(dir_path, 0, NULL);
-    if (!dir) {
-        return FALSE;
-    }
-
-    const char *name = NULL;
-    while ((name = g_dir_read_name(dir)) != NULL) {
-        if (name[0] == '.') {
-            continue;
-        }
-        g_dir_close(dir);
-        return TRUE;
-    }
-
-    g_dir_close(dir);
-    return FALSE;
-}
-
-static char *replace_backslashes(const char *text) {
-    char *copy = g_strdup(text ? text : "");
-    for (char *p = copy; *p; p++) {
-        if (*p == '\\') {
-            *p = '/';
-        }
-    }
-    return copy;
-}
-
-static gboolean path_has_parent_reference(const char *path) {
-    if (!path || !*path) {
-        return TRUE;
-    }
-    char **parts = g_strsplit(path, "/", -1);
-    gboolean bad = FALSE;
-    for (int i = 0; parts[i]; i++) {
-        if (strcmp(parts[i], "..") == 0) {
-            bad = TRUE;
-            break;
-        }
-    }
-    g_strfreev(parts);
-    return bad;
-}
-
-static char *sanitize_archive_entry_path(const char *path) {
-    char *slashes = replace_backslashes(path);
-    char *normalized = g_strdup(slashes);
-    g_free(slashes);
-
-    g_strstrip(normalized);
-    while (g_str_has_prefix(normalized, "/")) {
-        memmove(normalized, normalized + 1, strlen(normalized));
-    }
-    while (g_str_has_prefix(normalized, "./")) {
-        memmove(normalized, normalized + 2, strlen(normalized) - 1);
-    }
-
-    if (!*normalized || path_has_parent_reference(normalized)) {
-        g_free(normalized);
-        return NULL;
-    }
-
-    return normalized;
-}
-
-static void clear_directory_contents(const char *dir_path) {
-    GDir *dir = g_dir_open(dir_path, 0, NULL);
-    if (!dir) {
-        return;
-    }
-
-    const char *name = NULL;
-    while ((name = g_dir_read_name(dir)) != NULL) {
-        if (name[0] == '.') {
-            continue;
-        }
-
-        char *child = g_build_filename(dir_path, name, NULL);
-        if (g_file_test(child, G_FILE_TEST_IS_DIR)) {
-            clear_directory_contents(child);
-            g_rmdir(child);
-        } else {
-            g_remove(child);
-        }
-        g_free(child);
-    }
-
-    g_dir_close(dir);
-}
-
-static gboolean resource_stamp_matches(const char *resource_dir, const char *zip_path) {
-    struct stat zip_st;
-    if (g_stat(zip_path, &zip_st) != 0) {
-        return FALSE;
-    }
-
-    char *stamp_path = get_resource_stamp_path(resource_dir);
-    gchar *contents = NULL;
-    gboolean ok = FALSE;
-
-    if (g_file_get_contents(stamp_path, &contents, NULL, NULL) && contents) {
-        gchar *expected = g_strdup_printf("%lld:%lld",
-            (long long)zip_st.st_mtime, (long long)zip_st.st_size);
-        ok = g_strcmp0(contents, expected) == 0;
-        g_free(expected);
-    }
-
-    g_free(contents);
-    g_free(stamp_path);
-    return ok;
-}
-
-static void write_resource_stamp(const char *resource_dir, const char *zip_path) {
-    struct stat zip_st;
-    if (g_stat(zip_path, &zip_st) != 0) {
-        return;
-    }
-
-    char *stamp_path = get_resource_stamp_path(resource_dir);
-    gchar *contents = g_strdup_printf("%lld:%lld",
-        (long long)zip_st.st_mtime, (long long)zip_st.st_size);
-    g_file_set_contents(stamp_path, contents, -1, NULL);
-    g_free(contents);
-    g_free(stamp_path);
-}
-
-static gboolean extract_zip_to_directory(const char *zip_path, const char *output_dir, const char *dict_path) {
-    extern void settings_scan_progress_notify(const char *path, int percent);
-    /* Count total entries first so we can compute progress */
-    int total_entries = 0;
-    struct archive *counter = archive_read_new();
-    struct archive_entry *centry = NULL;
-    archive_read_support_filter_all(counter);
-    archive_read_support_format_zip(counter);
-    if (archive_read_open_filename(counter, zip_path, 10240) == ARCHIVE_OK) {
-        int cstatus = ARCHIVE_OK;
-        while ((cstatus = archive_read_next_header(counter, &centry)) == ARCHIVE_OK) {
-            total_entries++;
-            archive_read_data_skip(counter);
-        }
-    }
-    archive_read_close(counter);
-    archive_read_free(counter);
-    if (total_entries == 0) total_entries = 1;
-
-    struct archive *reader = archive_read_new();
-    struct archive_entry *entry = NULL;
-    gboolean ok = TRUE;
-    int status = ARCHIVE_OK;
-
-    archive_read_support_filter_all(reader);
-    archive_read_support_format_zip(reader);
-
-    clear_directory_contents(output_dir);
-
-    if (archive_read_open_filename(reader, zip_path, 10240) != ARCHIVE_OK) {
-        fprintf(stderr, "[DSL RESOURCES] Failed to open ZIP %s: %s\n",
-                zip_path, archive_error_string(reader));
-        ok = FALSE;
-        goto done;
-    }
-
-    int processed = 0;
-    int last_percent = -1;
-    while ((status = archive_read_next_header(reader, &entry)) != ARCHIVE_EOF) {
-        if (status < ARCHIVE_WARN) {
-            fprintf(stderr, "[DSL RESOURCES] Failed reading ZIP entry from %s: %s\n",
-                    zip_path, archive_error_string(reader));
-            ok = FALSE;
-            break;
-        }
-
-        const char *raw_path = archive_entry_pathname(entry);
-        char *safe_rel = sanitize_archive_entry_path(raw_path);
-        if (!safe_rel) {
-            archive_read_data_skip(reader);
-            continue;
-        }
-
-        char *dest_path = g_build_filename(output_dir, safe_rel, NULL);
-        mode_t mode = archive_entry_perm(entry);
-        mode_t fallback_mode = mode ? mode : 0644;
-        mode_t filetype = archive_entry_filetype(entry);
-
-        if (filetype == AE_IFDIR) {
-            if (g_mkdir_with_parents(dest_path, mode ? mode : 0755) != 0) {
-                fprintf(stderr, "[DSL RESOURCES] Failed creating directory %s\n", dest_path);
-                g_free(dest_path);
-                g_free(safe_rel);
-                ok = FALSE;
-                break;
-            }
-        } else if (filetype == AE_IFREG || filetype == 0) {
-            char *parent_dir = g_path_get_dirname(dest_path);
-            if (g_mkdir_with_parents(parent_dir, 0755) != 0) {
-                fprintf(stderr, "[DSL RESOURCES] Failed creating parent directory for %s\n", dest_path);
-                g_free(parent_dir);
-                g_free(dest_path);
-                g_free(safe_rel);
-                ok = FALSE;
-                break;
-            }
-            g_free(parent_dir);
-
-            int fd = g_open(dest_path, O_CREAT | O_TRUNC | O_WRONLY, fallback_mode);
-            if (fd < 0) {
-                fprintf(stderr, "[DSL RESOURCES] Failed opening %s for writing\n", dest_path);
-                g_free(dest_path);
-                g_free(safe_rel);
-                ok = FALSE;
-                break;
-            }
-
-            status = archive_read_data_into_fd(reader, fd);
-            close(fd);
-            if (status < ARCHIVE_WARN) {
-                fprintf(stderr, "[DSL RESOURCES] Failed extracting %s: %s\n",
-                        dest_path, archive_error_string(reader));
-                g_free(dest_path);
-                g_free(safe_rel);
-                ok = FALSE;
-                break;
-            }
-            g_chmod(dest_path, fallback_mode);
-            /* Update progress for this dict */
-            processed++;
-            int pct = (processed * 100) / total_entries;
-            if (pct != last_percent) {
-                last_percent = pct;
-                settings_scan_progress_notify(dict_path ? dict_path : zip_path, pct);
-            }
-        } else {
-            archive_read_data_skip(reader);
-        }
-
-        g_free(dest_path);
-        g_free(safe_rel);
-    }
-
-done:
-    archive_read_close(reader);
-    archive_read_free(reader);
-    return ok;
-}
 
 static char *dsl_find_local_resource_dir(const char *path) {
     char *candidate = g_strconcat(path, ".files", NULL);
@@ -391,7 +85,7 @@ static char *dsl_find_resource_zip(const char *path) {
     return NULL;
 }
 
-static char *dsl_prepare_resource_dir(const char *path) {
+static char *dsl_prepare_resource_dir(const char *path, ResourceReader **out_reader) {
     char *local_dir = dsl_find_local_resource_dir(path);
     if (local_dir) {
         return local_dir;
@@ -402,21 +96,22 @@ static char *dsl_prepare_resource_dir(const char *path) {
         return NULL;
     }
 
-    char *resource_dir = get_resource_cache_dir_path(path);
-    if (!ensure_resource_cache_directory(resource_dir)) {
+    char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, path, -1);
+    const char *base = dict_cache_base_dir();
+    char *resource_dir = g_build_filename(base, "diction", "resources", hash, NULL);
+    g_free(hash);
+    if (g_mkdir_with_parents(resource_dir, 0755) != 0) {
         g_free(resource_dir);
         g_free(zip_path);
         return NULL;
     }
 
-    if ((!dir_has_visible_files(resource_dir) || !resource_stamp_matches(resource_dir, zip_path)) &&
-        !extract_zip_to_directory(zip_path, resource_dir, path)) {
-        g_free(resource_dir);
-        g_free(zip_path);
-        return NULL;
+    /* Phase 2: Lazy extraction — scan ZIP but don't extract.
+     * Individual files will be extracted on demand by ResourceReader. */
+    if (out_reader) {
+        *out_reader = resource_reader_open_zip(zip_path, resource_dir);
     }
 
-    write_resource_stamp(resource_dir, zip_path);
     g_free(zip_path);
     return resource_dir;
 }
@@ -426,7 +121,7 @@ typedef struct {
     size_t length;
 } HwSpan;
 
-static size_t parse_dsl_into_tree(DictMmap *dict, TreeEntry **out_entries) {
+static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries) {
     const char *p   = dict->data;
     const char *end = p + dict->size;
 
@@ -443,23 +138,18 @@ static size_t parse_dsl_into_tree(DictMmap *dict, TreeEntry **out_entries) {
     TreeEntry *entries = NULL;
     size_t entry_cap = 0;
 
-    /* Flush: insert every collected headword with the current def block */
+    /* Flush: collect every headword with the current def block */
     #define FLUSH_HEADWORDS() do {                                       \
         if (in_def && hw_count > 0 && def_len > 0) {                    \
             for (size_t _i = 0; _i < hw_count; _i++) {                  \
-                splay_tree_insert(dict->index,                           \
-                    hws[_i].offset, hws[_i].length,                      \
-                    def_offset, def_len);                                \
-                if (out_entries) {                                       \
-                    if (word_count >= entry_cap) {                       \
-                        entry_cap = (entry_cap == 0) ? 1024 : entry_cap * 2; \
-                        entries = realloc(entries, entry_cap * sizeof(TreeEntry)); \
-                    }                                                    \
-                    entries[word_count].h_off = (int64_t)hws[_i].offset; \
-                    entries[word_count].h_len = (uint64_t)hws[_i].length; \
-                    entries[word_count].d_off = (int64_t)def_offset;    \
-                    entries[word_count].d_len = (uint64_t)def_len;      \
+                if (word_count >= entry_cap) {                           \
+                    entry_cap = (entry_cap == 0) ? 1024 : entry_cap * 2; \
+                    entries = realloc(entries, entry_cap * sizeof(TreeEntry)); \
                 }                                                        \
+                entries[word_count].h_off = (int64_t)hws[_i].offset;     \
+                entries[word_count].h_len = (uint64_t)hws[_i].length;    \
+                entries[word_count].d_off = (int64_t)def_offset;         \
+                entries[word_count].d_len = (uint64_t)def_len;           \
                 word_count++;                                            \
             }                                                            \
         }                                                                \
@@ -550,8 +240,16 @@ static size_t parse_dsl_into_tree(DictMmap *dict, TreeEntry **out_entries) {
     #undef FLUSH_HEADWORDS
 
     free(hws);
-    if (out_entries) *out_entries = entries;
-    printf("[DEBUG] parse_dsl_into_tree: indexed %zu headwords.\n", word_count);
+    if (out_entries) {
+        /* Sort entries for binary search */
+        if (entries && word_count > 0) {
+            flat_index_sort_entries(entries, word_count, dict->data, dict->size);
+        }
+        *out_entries = entries;
+    } else {
+        free(entries);
+    }
+    printf("[DEBUG] parse_dsl_into_entries: indexed %zu headwords.\n", word_count);
     return word_count;
 }
 
@@ -625,18 +323,18 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
     }
 
     // Ensure cache directory exists
-    ensure_cache_directory();
+    dict_cache_ensure_dir();
 
     // Get cache path for this dictionary
-    char *cache_path = get_cached_dict_path(path);
+    char *cache_path = dict_cache_path_for(path);
     gboolean cache_exists = (access(cache_path, F_OK) == 0);
-    gboolean cache_valid = cache_exists && is_cache_valid(cache_path, path);
+    gboolean cache_valid = cache_exists && dict_cache_is_valid(cache_path, path);
 
     DictMmap *dict = (DictMmap*)calloc(1, sizeof(DictMmap));
     dict->fd = -1;
     dict->tmp_file = NULL;
     dict->source_dir = g_path_get_dirname(path);
-    dict->resource_dir = dsl_prepare_resource_dir(path);
+    dict->resource_dir = dsl_prepare_resource_dir(path, &dict->resource_reader);
 
     if (cache_valid) {
         // Use cached version directly
@@ -666,7 +364,7 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         }
 
         dict->data = (const char*)map;
-        dict->index = splay_tree_new(dict->data, dict->size);
+        dict->index = flat_index_open(dict->data, dict->size);
 
         // Fast load: read index from end
         uint64_t count = *(uint64_t*)dict->data;
@@ -698,7 +396,7 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                     if ((uint64_t)d_off + d_len > data_region_end) { valid_index = FALSE; break; }
                 }
                 if (valid_index) {
-                    insert_balanced(dict->index, entries, 0, (int)count - 1);
+                    /* Index already loaded via flat_index_open — no insert needed */
                     printf("[DSL] Fast-loaded %lu entries from cache.\n", (unsigned long)count);
                     /* Ensure a name exists for UI (some caches omit it) */
                     if (!dict->name) {
@@ -718,13 +416,14 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         if (need_index) {
             printf("[DSL] Cache exists but lacks index. Performing auto-upgrade...\n");
             TreeEntry *entries = NULL;
-            size_t word_count = parse_dsl_into_tree(dict, &entries);
+            size_t word_count = parse_dsl_into_entries(dict, &entries);
 
             /* Check for cancellation before attempting to upgrade cache */
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
                 // abort and cleanup
                 if (dict->fd >= 0) close(dict->fd);
                 if (dict->tmp_file) fclose(dict->tmp_file);
+                free(entries);
                 free(dict);
                 g_free(cache_path);
                 return NULL;
@@ -741,25 +440,24 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                     write(fd_rw, &final_cnt, 8);
                     close(fd_rw);
 
-                    // Re-mmap the newly appended file part
+                    // Re-mmap the newly appended file
                     munmap((void*)dict->data, dict->size);
                     struct stat st_new;
                     fstat(dict->fd, &st_new);
                     dict->size = st_new.st_size;
                     dict->data = mmap(NULL, dict->size, PROT_READ, MAP_PRIVATE, dict->fd, 0);
-                        /* Ensure the splay-tree uses the new mmap base pointer
-                         * (parse_dsl_into_tree inserted nodes into dict->index
-                         * while using the previous mapping). Update the tree so
-                         * subsequent searches read from the correct memory. */
-                        if (dict->index) {
-                            dict->index->mmap_data = dict->data;
-                            dict->index->mmap_size = dict->size;
-                        }
+
+                    // Reopen flat index with new data
+                    flat_index_close(dict->index);
+                    dict->index = flat_index_open(dict->data, dict->size);
                     printf("[DSL] Auto-upgraded cache for %s (%lu entries).\n", path, (unsigned long)word_count);
                 }
                 free(entries);
             }
         }
+        
+        close(dict->fd);
+        dict->fd = -1;
     } else {
         // Need to extract and convert
         printf("Loading Dictionary: %s\n", path);
@@ -912,10 +610,9 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         }
 
         dict->data = (const char*)map;
-        dict->index = splay_tree_new(dict->data, dict->size);
 
         TreeEntry *entries = NULL;
-        size_t count = parse_dsl_into_tree(dict, &entries);
+        size_t count = parse_dsl_into_entries(dict, &entries);
 
         if (count > 0 && entries) {
             // Append entries to cache file
@@ -936,13 +633,11 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         fstat(dict->fd, &st_final);
         dict->size = st_final.st_size;
         dict->data = mmap(NULL, dict->size, PROT_READ, MAP_PRIVATE, dict->fd, 0);
-        /* If a splay-tree was populated against the previous mapping,
-         * update its mmap base so node comparisons read from the new
-         * mapping address. This avoids use-after-unmap crashes. */
-        if (dict->index) {
-            dict->index->mmap_data = dict->data;
-            dict->index->mmap_size = dict->size;
-        }
+        close(dict->fd);
+        dict->fd = -1;
+
+        // Open flat index from the newly written cache
+        dict->index = flat_index_open(dict->data, dict->size);
     }
 
     return dict;
@@ -950,7 +645,8 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
 
 void dict_mmap_close(DictMmap *dict) {
     if (dict) {
-        splay_tree_free(dict->index);
+        flat_index_close(dict->index);
+        resource_reader_close(dict->resource_reader);
         if (dict->data) munmap((void*)dict->data, dict->size);
         if (dict->fd >= 0) close(dict->fd);
         if (dict->name) free(dict->name);

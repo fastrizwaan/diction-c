@@ -319,25 +319,8 @@ static char *safe_markup_escape_n(const char *buf, gssize len) {
     return escaped;
 }
 
-/* Log a short preview of a markup string safely (prints non-printable
- * bytes as \xNN). Helps diagnosing invalid markup input without
- * crashing the UI. */
-static void log_markup_preview(const char *where, const char *markup) {
-    if (!markup) return;
-    size_t len = strlen(markup);
-    size_t max = len > 128 ? 128 : len;
-    fprintf(stderr, "[MARKUP DEBUG] %s: len=%zu preview='", where, len);
-    for (size_t i = 0; i < max; i++) {
-        unsigned char c = (unsigned char)markup[i];
-        if (c >= 32 && c < 127) fputc(c, stderr);
-        else if (c == '\n') fputs("\\n", stderr);
-        else if (c == '\r') fputs("\\r", stderr);
-        else if (c == '\t') fputs("\\t", stderr);
-        else fprintf(stderr, "\\x%02x", c);
-    }
-    if (max < len) fputs("...', (truncated)\n", stderr);
-    else fputs("'\n", stderr);
-}
+
+
 
 #define HISTORY_FILE_NAME "history.json"
 #define FAVORITES_FILE_NAME "favorites.json"
@@ -362,7 +345,8 @@ typedef struct {
     GHashTable *seen_words;
     DictEntry *current_entry;
     DictEntry *current_dict;
-    SplayNode *current_node;
+    size_t current_pos;  /* position in flat index */
+    gboolean has_current_pos;
     gboolean list_started;
     guint source_id;
     GPtrArray *global_bucket_labels[BUCKET_COUNT];
@@ -602,11 +586,25 @@ static gboolean try_play_encoded_sound_uri(const char *uri) {
     fprintf(stderr, "[AUDIO CLICKED] Resource dir: %s\n", resource_dir);
     fprintf(stderr, "[AUDIO CLICKED] File: %s\n", sound_file);
 
-    char *audio_path = g_build_filename(resource_dir, sound_file, NULL);
-    if (g_file_test(audio_path, G_FILE_TEST_EXISTS)) {
+    char *audio_path = NULL;
+    for (DictEntry *e = all_dicts; e; e = e->next) {
+        if (e->dict && e->dict->resource_dir && g_strcmp0(e->dict->resource_dir, resource_dir) == 0) {
+            if (e->dict->resource_reader) {
+                fprintf(stderr, "[AUDIO DEBUG] Searching ResourceReader for '%s'\n", sound_file);
+                audio_path = resource_reader_get(e->dict->resource_reader, sound_file);
+                if (audio_path) break;
+            }
+        }
+    }
+
+    if (!audio_path) {
+        audio_path = g_build_filename(resource_dir, sound_file, NULL);
+    }
+
+    if (audio_path && g_file_test(audio_path, G_FILE_TEST_EXISTS)) {
         play_audio_file(audio_path);
     } else {
-        fprintf(stderr, "[AUDIO ERROR] File not found: %s\n", audio_path);
+        fprintf(stderr, "[AUDIO ERROR] File not found: %s\n", audio_path ? audio_path : sound_file);
     }
 
     g_free(audio_path);
@@ -1154,7 +1152,7 @@ static void sidebar_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
         markup = g_strdup(safe_title);
     }
 
-    log_markup_preview("sidebar_list_item_bind", markup);
+    //log_markup_preview("sidebar_list_item_bind", markup);
     gtk_label_set_markup(GTK_LABEL(label), markup);
     g_free(markup);
     g_free(safe_title);
@@ -1239,7 +1237,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
     const guint max_batch_size = 512;
     gint64 deadline_us = g_get_monotonic_time() + 2000;
     while (processed < max_batch_size && g_get_monotonic_time() < deadline_us) {
-        if (!state->current_entry && !state->current_node) {
+        if (!state->current_entry && !state->has_current_pos) {
             // END OF SEARCH - DO GLOBAL SORT & FLUSH
             for (int i = 0; i < BUCKET_COUNT; i++) {
                 guint n = state->global_bucket_labels[i]->len;
@@ -1281,43 +1279,49 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             return G_SOURCE_REMOVE;
         }
 
-        if (!state->current_node) {
+        if (!state->has_current_pos) {
             gboolean found_dict = FALSE;
             while (state->current_entry) {
                 DictEntry *entry = state->current_entry;
                 state->current_entry = state->current_entry->next;
-                if (!entry->dict || !entry->dict->index || !entry->dict->index->root ||
+                if (!entry->dict || !entry->dict->index ||
+                    flat_index_count(entry->dict->index) == 0 ||
                     !dict_entry_in_active_scope(entry)) {
                     continue;
                 }
-                state->current_node = splay_tree_min(entry->dict->index->root);
-                if (state->current_node) {
-                    state->current_dict = entry;
-                    found_dict = TRUE;
-                    break;
-                }
+                state->current_pos = 0;
+                state->has_current_pos = TRUE;
+                state->current_dict = entry;
+                found_dict = TRUE;
+                break;
             }
 
             if (!found_dict) {
                 continue;
             }
-
         }
 
-        if (!state->current_node) {
+        if (!state->has_current_pos) {
             continue;
         }
         if (!state->current_dict) {
-            state->current_node = NULL;
+            state->has_current_pos = FALSE;
             processed++;
             continue;
         }
 
-        SplayNode *node = state->current_node;
-        state->current_node = splay_tree_successor(node);
+        const FlatTreeEntry *node = flat_index_get(state->current_dict->dict->index, state->current_pos);
+        if (!node) {
+            state->has_current_pos = FALSE;
+            continue;
+        }
+        state->current_pos++;
+        if (state->current_pos >= flat_index_count(state->current_dict->dict->index)) {
+            state->has_current_pos = FALSE;
+        }
 
-        // 🔥 FAST PRE-FILTER (zero alloc, length-safe)
-        if (!fast_strncasestr(state->current_dict->dict->data + node->key_offset, node->key_length, state->query)) {
+        // FAST PRE-FILTER (zero alloc, length-safe)
+        if (!fast_strncasestr(state->current_dict->dict->data + node->h_off, node->h_len, state->query)) {
             processed++;
             if ((processed & 63) == 0) {
                 if (g_get_monotonic_time() > deadline_us)
@@ -1326,7 +1330,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             continue;
         }
 
-        char *word = g_strndup(state->current_dict->dict->data + node->key_offset, node->key_length);
+        char *word = g_strndup(state->current_dict->dict->data + node->h_off, node->h_len);
         char *clean_word = normalize_headword_for_search(word);
         if (!clean_word || text_has_replacement_char(clean_word)) {
             g_free(word);
@@ -1391,7 +1395,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             }
         }
 
-        if (!state->current_node) {
+        if (!state->has_current_pos) {
             state->current_dict = NULL;
         }
 
@@ -1424,16 +1428,19 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
             continue;
         }
 
-        for (SplayNode *node = splay_tree_search_first(entry->dict->index, state->query);
-             node && added < max_seed_rows;
-             node = splay_tree_successor(node)) {
+        size_t pos = flat_index_search_prefix(entry->dict->index, state->query);
+        while (pos != (size_t)-1 && added < max_seed_rows) {
+            const FlatTreeEntry *node = flat_index_get(entry->dict->index, pos);
+            if (!node) break;
 
-            char *raw_word = g_strndup(entry->dict->data + node->key_offset, node->key_length);
+            char *raw_word = g_strndup(entry->dict->data + node->h_off, node->h_len);
             char *clean_word = normalize_headword_for_search(raw_word);
             g_free(raw_word);
 
             if (!clean_word || text_has_replacement_char(clean_word)) {
                 if (clean_word) g_free(clean_word);
+                pos++;
+                if (pos >= flat_index_count(entry->dict->index)) break;
                 continue;
             }
 
@@ -1464,6 +1471,8 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
 
             if (clean_word) g_free(clean_word);
             g_free(word_key);
+            pos++;
+            if (pos >= flat_index_count(entry->dict->index)) break;
         }
     }
 
@@ -1981,13 +1990,20 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
                 const char *sound_file = uri + 8; // Skip "sound://"
                 fprintf(stderr, "[AUDIO CLICKED] Clicked: %s\n", sound_file);
                 
-                /* Backward-compatible fallback */
+                /* Backward-compatible fallback and lazy loading */
                 if (active_entry && active_entry->dict && active_entry->dict->resource_dir) {
-                    char *audio_path = g_build_filename(active_entry->dict->resource_dir, sound_file, NULL);
-                    if (g_file_test(audio_path, G_FILE_TEST_EXISTS)) {
+                    char *audio_path = NULL;
+                    if (active_entry->dict->resource_reader) {
+                        audio_path = resource_reader_get(active_entry->dict->resource_reader, sound_file);
+                    }
+                    if (!audio_path) {
+                        audio_path = g_build_filename(active_entry->dict->resource_dir, sound_file, NULL);
+                    }
+
+                    if (audio_path && g_file_test(audio_path, G_FILE_TEST_EXISTS)) {
                         play_audio_file(audio_path);
                     } else {
-                        fprintf(stderr, "[AUDIO ERROR] File not found: %s\n", audio_path);
+                        fprintf(stderr, "[AUDIO ERROR] File not found: %s\n", audio_path ? audio_path : sound_file);
                     }
                     g_free(audio_path);
                 } else {
@@ -2073,7 +2089,7 @@ static void related_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
     if (payload && payload->type == RELATED_ROW_HINT) {
         char *escaped = g_markup_escape_text(valid_text, -1);
         char *markup = g_strdup_printf("<span alpha='75%%'>%s</span>", escaped);
-        log_markup_preview("related_list_item_bind", markup);
+        //log_markup_preview("related_list_item_bind", markup);
         gtk_label_set_markup(GTK_LABEL(label), markup);
         g_free(markup);
         g_free(escaped);
@@ -2167,12 +2183,12 @@ static gboolean headword_matches_normalized_query(const char *raw_word, const ch
 
 static void append_rendered_entry_html(GString *html_res,
                                        DictEntry *entry,
-                                       SplayNode *res,
+                                       const FlatTreeEntry *res,
                                        int dict_idx,
                                        int *dict_header_shown,
                                        int *found_count) {
-    const char *def_ptr = entry->dict->data + res->val_offset;
-    size_t def_len = res->val_length;
+    const char *def_ptr = entry->dict->data + res->d_off;
+    size_t def_len = res->d_len;
 
     if (entry->format == DICT_FORMAT_MDX && def_len > 8 && g_str_has_prefix(def_ptr, "@@@LINK=")) {
         char link_target[1024];
@@ -2184,10 +2200,13 @@ static void append_rendered_entry_html(GString *html_res,
         }
         link_target[l] = '\0';
 
-        SplayNode *red_res = splay_tree_search_first(entry->dict->index, link_target);
-        if (red_res) {
-            def_ptr = entry->dict->data + red_res->val_offset;
-            def_len = red_res->val_length;
+        size_t red_pos = flat_index_search(entry->dict->index, link_target);
+        if (red_pos != (size_t)-1) {
+            const FlatTreeEntry *red_res = flat_index_get(entry->dict->index, red_pos);
+            if (red_res) {
+                def_ptr = entry->dict->data + red_res->d_off;
+                def_len = red_res->d_len;
+            }
         }
     }
 
@@ -2196,9 +2215,12 @@ static void append_rendered_entry_html(GString *html_res,
         ? app_settings->render_style
         : "diction";
 
+    /* Phase 2: Set lazy resource reader for on-demand extraction */
+    dict_render_set_resource_reader(entry->dict->resource_reader);
+
     char *rendered = dsl_render_to_html(
         def_ptr, def_len,
-        entry->dict->data + res->key_offset, res->key_length,
+        entry->dict->data + res->h_off, res->h_len,
         entry->format, entry->dict->resource_dir, entry->dict->source_dir, entry->dict->mdx_stylesheet, dark_mode,
         app_settings ? app_settings->color_theme : "default",
         render_style,
@@ -2209,7 +2231,7 @@ static void append_rendered_entry_html(GString *html_res,
     }
 
     char *escaped_name = safe_markup_escape_n(entry->name ? entry->name : "", -1);
-    char *escaped_headword = safe_markup_escape_n(entry->dict->data + res->key_offset, (gssize)res->key_length);
+    char *escaped_headword = safe_markup_escape_n(entry->dict->data + res->h_off, (gssize)res->h_len);
     gboolean first_match_for_dict = FALSE;
 
     if (!*dict_header_shown) {
@@ -2305,11 +2327,13 @@ static void execute_search_now(void) {
     for (DictEntry *e = all_dicts; e; e = e->next) {
         if (!e->dict || !dict_entry_in_active_scope(e)) continue;
 
-        SplayNode *res = splay_tree_search_first(e->dict->index, query);
+        size_t pos = flat_index_search(e->dict->index, query);
         int dict_header_shown = 0;
 
-        while (res != NULL) {
-            char *raw_word = g_strndup(e->dict->data + res->key_offset, res->key_length);
+        while (pos != (size_t)-1) {
+            const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
+            if (!res) break;
+            char *raw_word = g_strndup(e->dict->data + res->h_off, res->h_len);
             gboolean matches = headword_matches_normalized_query(raw_word, query_key);
             g_free(raw_word);
 
@@ -2319,7 +2343,8 @@ static void execute_search_now(void) {
             
             append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             
-            res = splay_tree_successor(res);
+            pos++;
+            if (pos >= flat_index_count(e->dict->index)) break;
         }
 
         dict_idx++;
@@ -2390,17 +2415,20 @@ static void append_rendered_word_html(const char *raw_word) {
     for (DictEntry *e = all_dicts; e; e = e->next) {
         if (!e->dict || !dict_entry_in_active_scope(e)) continue;
 
-        SplayNode *res = splay_tree_search_first(e->dict->index, query);
+        size_t pos = flat_index_search(e->dict->index, query);
         size_t q_len = strlen(query);
         int dict_header_shown = 0;
 
-        while (res != NULL) {
-            if (res->key_length != q_len || 
-                strncasecmp(e->dict->data + res->key_offset, query, q_len) != 0) {
+        while (pos != (size_t)-1) {
+            const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
+            if (!res) break;
+            if (res->h_len != q_len || 
+                strncasecmp(e->dict->data + res->h_off, query, q_len) != 0) {
                 break;
             }
             append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
-            res = splay_tree_successor(res);
+            pos++;
+            if (pos >= flat_index_count(e->dict->index)) break;
         }
         dict_idx++;
     }
@@ -2408,21 +2436,24 @@ static void append_rendered_word_html(const char *raw_word) {
     if (found_count > 0) {
         update_history_word(query);
 
-        char *b64 = g_base64_encode((const guchar *)html_res->str, html_res->len);
-        char *js_query = g_strescape(query, NULL);
-        char *escaped_attr = safe_markup_escape_n(query, -1);
+        char *b64_html = g_base64_encode((const guchar *)html_res->str, html_res->len);
+        char *b64_word = g_base64_encode((const guchar *)query, strlen(query));
 
         char *js = g_strdup_printf(
-            "var word = '%s';"
-            "var attrWord = '%s';"
+            "var decWord = atob('%s');"
+            "var bytesWord = new Uint8Array(decWord.length);"
+            "for(var i=0; i<decWord.length; i++) bytesWord[i] = decWord.charCodeAt(i);"
+            "var word = new TextDecoder('utf-8').decode(bytesWord);"
+
             "var b64Html = '%s';"
-            "var existing = document.querySelector(\".word-group[data-word='\" + attrWord + \"']\");"
+
+            "var existing = document.querySelector(\".word-group[data-word='\" + CSS.escape(word) + \"']\");"
             "if (existing) {"
             "    existing.scrollIntoView({behavior: 'smooth', block: 'start'});"
             "} else {"
             "    var wrapper = document.createElement('div');"
             "    wrapper.className = 'word-group';"
-            "    wrapper.setAttribute('data-word', attrWord);"
+            "    wrapper.setAttribute('data-word', word);"
             "    var dec = atob(b64Html);"
             "    var bytes = new Uint8Array(dec.length);"
             "    for (var i = 0; i < dec.length; i++) bytes[i] = dec.charCodeAt(i);"
@@ -2430,14 +2461,13 @@ static void append_rendered_word_html(const char *raw_word) {
             "    document.body.insertBefore(wrapper, document.body.firstChild);"
             "    wrapper.scrollIntoView({behavior: 'smooth', block: 'start'});"
             "}",
-            js_query, escaped_attr, b64);
+            b64_word, b64_html);
             
         webkit_web_view_evaluate_javascript(web_view, js, -1, NULL, NULL, NULL, NULL, NULL);
 
         g_free(js);
-        g_free(js_query);
-        g_free(b64);
-        g_free(escaped_attr);
+        g_free(b64_word);
+        g_free(b64_html);
     }
     
     g_free(query_key);
@@ -2468,7 +2498,7 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
 
     // Count dicts
     int count = 0;
-    for (DictEntry *e = all_dicts; e; e = e->next) if (e->dict && e->dict->index->root) count++;
+    for (DictEntry *e = all_dicts; e; e = e->next) if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0) count++;
     if (count == 0) return;
 
     // Pick random dict
@@ -2476,22 +2506,23 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
     DictEntry *e = all_dicts;
     int cur = 0;
     while (e) {
-        if (e->dict && e->dict->index->root) {
+        if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0) {
             if (cur == target) break;
             cur++;
         }
         e = e->next;
     }
 
-    if (e && e->dict && e->dict->index->root) {
-        SplayNode *node = splay_tree_get_random(e->dict->index);
+    if (e && e->dict && flat_index_count(e->dict->index) > 0) {
+        const FlatTreeEntry *node = flat_index_random(e->dict->index);
         if (node) {
-            const char *word = e->dict->data + node->key_offset;
-            size_t len = node->key_length;
+            const char *word = e->dict->data + node->h_off;
+            size_t len = node->h_len;
             char *word_str = g_strndup(word, len);
             gtk_editable_set_text(GTK_EDITABLE(search_entry), word_str);
             g_free(word_str);
-            // Search will be triggered by "search-changed" signal
+            // Search will be triggered by "search-changed" signal, but we want it instantly
+            execute_search_now();
         }
     }
 }
@@ -2501,6 +2532,7 @@ static void maybe_show_startup_random_word(void) {
         return;
     }
 
+
     const char *current = gtk_editable_get_text(GTK_EDITABLE(search_entry));
     if (current && *current) {
         startup_random_word_pending = FALSE;
@@ -2509,7 +2541,7 @@ static void maybe_show_startup_random_word(void) {
 
     int loaded_count = 0;
     for (DictEntry *e = all_dicts; e; e = e->next) {
-        if (e->dict && e->dict->index && e->dict->index->root && dict_entry_in_active_scope(e)) {
+        if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0 && dict_entry_in_active_scope(e)) {
             loaded_count++;
             break;
         }
@@ -2528,7 +2560,7 @@ static void activate_dictionary_entry(DictEntry *e) {
     int idx = -1;
     int current = 0;
     for (DictEntry *cursor = all_dicts; cursor; cursor = cursor->next) {
-        if (!dict_entry_enabled(cursor)) {
+        if (!cursor->dict || !dict_entry_in_active_scope(cursor)) {
             continue;
         }
         if (cursor == e) {
@@ -2862,8 +2894,8 @@ static void finalize_dictionary_loading(gboolean allow_random_word, gboolean syn
         sync_settings_dictionaries_from_loaded();
     }
     rebuild_dict_entries_from_settings();
-    extern void settings_scan_notify(const char *name, const char *path, gboolean done);
-    settings_scan_notify(NULL, NULL, TRUE);
+    extern void settings_scan_notify(const char *name, const char *path, int event_type);
+    settings_scan_notify(NULL, NULL, -1);
     if (!active_entry && all_dicts) {
         active_entry = all_dicts;
     }
@@ -3181,9 +3213,6 @@ static void queue_loader_idle(LoadIdleKind kind,
 static gboolean on_dict_loaded_idle(gpointer user_data) {
     LoadIdleData *ld = user_data;
 
-    /* Notify any active settings scan dialogs about discovered dictionaries. */
-    extern void settings_scan_notify(const char *name, const char *path, gboolean done);
-
     if (ld->generation != g_atomic_int_get(&loader_generation)) {
         if (ld->entry) {
             dict_loader_free(ld->entry);
@@ -3199,8 +3228,9 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
         DictEntry *e = ld->entry;
         e->next = NULL;
 
-        /* Inform settings dialog(s) of discovered entry */
-        settings_scan_notify(e->name ? e->name : "(Unknown)", e->path ? e->path : "", FALSE);
+        /* Inform settings dialog(s) of finished entry */
+        extern void settings_scan_notify(const char *name, const char *path, int event_type);
+        settings_scan_notify(e->name ? e->name : "(Unknown)", e->path ? e->path : "", DICT_LOADER_EVENT_FINISHED);
 
         DictConfig *cfg = app_settings ? settings_find_dictionary_by_path(app_settings, e->path) : NULL;
         if (cfg && !cfg->enabled) {
@@ -3262,6 +3292,41 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
+/* ── Phase 5: Parallel loading helpers (file-scope to avoid executable stack) ── */
+typedef struct {
+    const char *path;
+    gint generation;
+    gboolean discover_from_dirs;
+    guint total;
+    volatile gint *completed;
+} LoadOneArgs;
+
+static void load_one_dict_worker(gpointer data, gpointer user_data) {
+    (void)user_data;
+    LoadOneArgs *la = data;
+    if (la->generation != g_atomic_int_get(&loader_generation)) {
+        g_free(la);
+        return;
+    }
+
+    DictFormat fmt = dict_detect_format(la->path);
+    DictMmap *dict = dict_load_any(la->path, fmt, &loader_generation, la->generation);
+
+    gint done = g_atomic_int_add(la->completed, 1) + 1;
+
+    if (dict) {
+        DictEntry *entry = create_dict_entry_from_loaded(la->path, fmt, dict);
+        char *basename = g_path_get_basename(la->path);
+        char *status = g_strdup_printf("Loading %s...", basename ? basename : "dictionary");
+        queue_loader_idle(LOAD_IDLE_ENTRY, la->generation, (guint)done, la->total, status, entry,
+                          la->discover_from_dirs);
+        g_free(status);
+        g_free(basename);
+    }
+
+    g_free(la);
+}
+
 static gpointer dict_load_thread(gpointer user_data) {
     LoadThreadArgs *args = user_data;
     GPtrArray *candidate_paths = g_ptr_array_new_with_free_func(g_free);
@@ -3287,35 +3352,72 @@ static gpointer dict_load_thread(gpointer user_data) {
                                                     args->ignored_paths);
     }
 
+    /* Inform settings scan dialog of discovered candidates */
+    extern void settings_scan_notify(const char *name, const char *path, int event_type);
+    for (guint i = 0; i < candidate_paths->len; i++) {
+        const char *p = g_ptr_array_index(candidate_paths, i);
+        char *b = g_path_get_basename(p);
+        settings_scan_notify(b, p, DICT_LOADER_EVENT_DISCOVERED);
+        g_free(b);
+    }
+
     guint total_candidates = candidate_paths->len;
     queue_loader_idle(LOAD_IDLE_STATUS, args->generation, 0, total_candidates,
                       total_candidates > 0 ? "Preparing Diction..." : "Preparing dictionary library...",
                       NULL, args->discover_from_dirs);
 
-    for (guint i = 0; i < candidate_paths->len; i++) {
-        if (args->generation != g_atomic_int_get(&loader_generation)) {
-            break;
-        }
+    /* ── Phase 5: Parallel dictionary loading ── */
+    if (total_candidates > 0) {
+        volatile gint completed_count = 0;
 
-        const char *path = g_ptr_array_index(candidate_paths, i);
-        char *basename = g_path_get_basename(path);
-        char *status = g_strdup_printf("Loading %s...", basename ? basename : "dictionary");
-        queue_loader_idle(LOAD_IDLE_STATUS, args->generation, i, total_candidates, status, NULL,
-                          args->discover_from_dirs);
+        /* Create thread pool with num_processors threads */
+        guint n_workers = g_get_num_processors();
+        if (n_workers < 2) n_workers = 2;
+        if (n_workers > 8) n_workers = 8;
 
-        DictFormat fmt = dict_detect_format(path);
-        DictMmap *dict = dict_load_any(path, fmt, &loader_generation, args->generation);
-        if (dict) {
-            DictEntry *entry = create_dict_entry_from_loaded(path, fmt, dict);
-            queue_loader_idle(LOAD_IDLE_ENTRY, args->generation, i + 1, total_candidates, status, entry,
-                              args->discover_from_dirs);
+        GError *pool_error = NULL;
+        GThreadPool *pool = g_thread_pool_new(load_one_dict_worker, NULL, (gint)n_workers, FALSE, &pool_error);
+
+        if (pool) {
+            for (guint i = 0; i < candidate_paths->len; i++) {
+                if (args->generation != g_atomic_int_get(&loader_generation)) break;
+
+                LoadOneArgs *la = g_new0(LoadOneArgs, 1);
+                la->path = g_ptr_array_index(candidate_paths, i);
+                la->generation = args->generation;
+                la->discover_from_dirs = args->discover_from_dirs;
+                la->total = total_candidates;
+                la->completed = &completed_count;
+
+                g_thread_pool_push(pool, la, NULL);
+            }
+
+            /* Wait for all tasks to finish */
+            g_thread_pool_free(pool, FALSE, TRUE);
         } else {
-            queue_loader_idle(LOAD_IDLE_STATUS, args->generation, i + 1, total_candidates, status, NULL,
-                              args->discover_from_dirs);
-        }
+            /* Fallback to serial loading if pool creation fails */
+            if (pool_error) {
+                fprintf(stderr, "[LOADER] Thread pool creation failed: %s, falling back to serial\n",
+                        pool_error->message);
+                g_error_free(pool_error);
+            }
+            for (guint i = 0; i < candidate_paths->len; i++) {
+                if (args->generation != g_atomic_int_get(&loader_generation)) break;
 
-        g_free(status);
-        g_free(basename);
+                const char *path = g_ptr_array_index(candidate_paths, i);
+                DictFormat fmt = dict_detect_format(path);
+                DictMmap *dict = dict_load_any(path, fmt, &loader_generation, args->generation);
+                if (dict) {
+                    DictEntry *entry = create_dict_entry_from_loaded(path, fmt, dict);
+                    char *basename = g_path_get_basename(path);
+                    char *status = g_strdup_printf("Loading %s...", basename ? basename : "dictionary");
+                    queue_loader_idle(LOAD_IDLE_ENTRY, args->generation, i + 1, total_candidates, status, entry,
+                                      args->discover_from_dirs);
+                    g_free(status);
+                    g_free(basename);
+                }
+            }
+        }
     }
 
     g_mutex_unlock(&dict_loader_mutex);
