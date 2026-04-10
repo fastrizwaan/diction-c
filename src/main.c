@@ -15,7 +15,7 @@ static AdwStyleManager *style_manager = NULL;
 static GtkSearchEntry *search_entry = NULL;
 static char *last_search_query = NULL;
 static AppSettings *app_settings = NULL;
-static GtkWidget *favorite_toggle_btn = NULL;
+static char *active_scope_id = NULL;
 static GPtrArray *history_words = NULL;
 static GPtrArray *favorite_words = NULL;
 static GPtrArray *nav_history = NULL;
@@ -37,7 +37,6 @@ static void nav_history_item_free(gpointer data) {
 static int nav_history_index = -1;
 static GtkWidget *nav_back_btn = NULL;
 static GtkWidget *nav_forward_btn = NULL;
-static char *active_scope_id = NULL;
 static guint search_execute_source_id = 0;
 static GtkStringList *related_string_list = NULL;
 static GtkSingleSelection *related_selection_model = NULL;
@@ -1139,16 +1138,41 @@ static GtkWidget *sidebar_list_item_make_label(void) {
     return label;
 }
 
+static void on_sidebar_favorite_clicked(GtkButton *btn, gpointer user_data);
+
+static gboolean transform_sidebar_star_visibility(GBinding *binding, const GValue *from_value, GValue *to_value, gpointer user_data) {
+    (void)binding;
+    gboolean selected = g_value_get_boolean(from_value);
+    const char *word = user_data;
+    gboolean is_favorite = word && word_list_contains_ci(favorite_words, word);
+    g_value_set_boolean(to_value, selected || is_favorite);
+    return TRUE;
+}
+
 static void sidebar_list_item_setup(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer user_data) {
     (void)factory;
     (void)user_data;
-    gtk_list_item_set_child(item, sidebar_list_item_make_label());
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *label = sidebar_list_item_make_label();
+    gtk_widget_set_hexpand(label, TRUE);
+    
+    GtkWidget *star_btn = gtk_button_new_from_icon_name("non-starred-symbolic");
+    gtk_widget_add_css_class(star_btn, "flat");
+    gtk_widget_set_valign(star_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_end(star_btn, 4);
+
+    gtk_box_append(GTK_BOX(box), label);
+    gtk_box_append(GTK_BOX(box), star_btn);
+    gtk_list_item_set_child(item, box);
 }
 
 static void sidebar_list_item_bind(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer user_data) {
     (void)factory;
     SidebarListView *sidebar = user_data;
-    GtkWidget *label = gtk_list_item_get_child(item);
+    GtkWidget *box = gtk_list_item_get_child(item);
+    GtkWidget *label = gtk_widget_get_first_child(box);
+    GtkWidget *star_btn = gtk_widget_get_last_child(box);
+
     guint position = gtk_list_item_get_position(item);
     SidebarRowPayload *payload = sidebar_payload_at(sidebar, position);
     const char *title = payload && payload->title ? payload->title : "";
@@ -1164,21 +1188,38 @@ static void sidebar_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
         } else {
             markup = g_strdup_printf("<span alpha='75%%'>%s</span>", safe_title);
         }
+        gtk_widget_set_visible(star_btn, FALSE);
     } else if (*safe_subtitle) {
         markup = g_strdup_printf("%s\n<span alpha='65%%' size='small'>%s</span>",
                                  safe_title, safe_subtitle);
+        gtk_widget_set_visible(star_btn, payload->type == SIDEBAR_ROW_WORD);
     } else {
         markup = g_strdup(safe_title);
+        gtk_widget_set_visible(star_btn, payload->type == SIDEBAR_ROW_WORD);
     }
 
-    //log_markup_preview("sidebar_list_item_bind", markup);
     gtk_label_set_markup(GTK_LABEL(label), markup);
+
+    g_signal_handlers_disconnect_by_func(star_btn, on_sidebar_favorite_clicked, NULL);
+    g_object_set_data(G_OBJECT(star_btn), "bind-item", item); // useful for re-evaluating visibility if favorite state changes
+    
+    if (payload && payload->type == SIDEBAR_ROW_WORD) {
+        g_signal_connect_data(star_btn, "clicked", G_CALLBACK(on_sidebar_favorite_clicked), g_strdup(title), (GClosureNotify)g_free, 0);
+        gboolean is_fav = word_list_contains_ci(favorite_words, title);
+        gtk_button_set_icon_name(GTK_BUTTON(star_btn), is_fav ? "starred-symbolic" : "non-starred-symbolic");
+
+        g_object_bind_property_full(item, "selected", star_btn, "visible", 
+            G_BINDING_SYNC_CREATE,
+            transform_sidebar_star_visibility, NULL, g_strdup(title), g_free);
+    } else {
+        gtk_widget_set_visible(star_btn, FALSE);
+    }
+
     g_free(markup);
     g_free(safe_title);
     g_free(safe_subtitle);
 }
 
-static void refresh_favorite_button_state(void);
 static void populate_history_sidebar(void);
 static void populate_favorites_sidebar(void);
 static void populate_groups_sidebar(void);
@@ -1555,7 +1596,7 @@ static void update_favorites_word(const char *word, gboolean add) {
             save_word_list(favorite_words, FAVORITES_FILE_NAME);
             populate_favorites_sidebar();
             populate_history_sidebar();
-            refresh_favorite_button_state();
+        
             g_free(clean);
             return;
         }
@@ -1566,12 +1607,12 @@ static void update_favorites_word(const char *word, gboolean add) {
         save_word_list(favorite_words, FAVORITES_FILE_NAME);
         populate_favorites_sidebar();
         populate_history_sidebar();
-        refresh_favorite_button_state();
+    
         return;
     }
 
     g_free(clean);
-    refresh_favorite_button_state();
+
 }
 
 static void update_history_word(const char *word) {
@@ -1816,18 +1857,7 @@ static void sync_settings_dictionaries_from_loaded(void) {
     settings_save(app_settings);
 }
 
-static void refresh_favorite_button_state(void) {
-    if (!favorite_toggle_btn || !search_entry) {
-        return;
-    }
-    char *clean = sanitize_user_word(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
-    gboolean is_favorite = clean && word_list_contains_ci(favorite_words, clean);
-    gtk_button_set_icon_name(GTK_BUTTON(favorite_toggle_btn),
-        is_favorite ? "starred-symbolic" : "non-starred-symbolic");
-    gtk_widget_set_tooltip_text(favorite_toggle_btn,
-        is_favorite ? "Remove from Favorites" : "Add to Favorites");
-    g_free(clean);
-}
+
 
 static void populate_history_sidebar(void) {
     GPtrArray *labels = g_ptr_array_new_with_free_func(g_free);
@@ -1962,17 +1992,7 @@ static void populate_groups_sidebar(void) {
     g_ptr_array_free(payloads, TRUE);
 }
 
-static void on_favorite_toggle_clicked(GtkButton *btn, gpointer user_data) {
-    (void)btn;
-    (void)user_data;
-    char *word = sanitize_user_word(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
-    if (!word) {
-        return;
-    }
-    gboolean is_favorite = word_list_contains_ci(favorite_words, word);
-    update_favorites_word(word, !is_favorite);
-    g_free(word);
-}
+
 
 static gboolean dict_entry_visible_in_sidebar(DictEntry *entry) {
     if (!entry || !dict_entry_enabled(entry)) {
@@ -2059,6 +2079,7 @@ static GtkWidget *create_sidebar_list_view(SidebarListView *sidebar, GCallback a
     g_signal_connect(factory, "bind", G_CALLBACK(sidebar_list_item_bind), sidebar);
 
     sidebar->list_view = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(sidebar->selection_model), factory));
+    gtk_widget_add_css_class(GTK_WIDGET(sidebar->list_view), "navigation-sidebar");
     gtk_list_view_set_single_click_activate(sidebar->list_view, TRUE);
     g_signal_connect(sidebar->list_view, "activate", activate_cb, sidebar);
     return GTK_WIDGET(sidebar->list_view);
@@ -2072,29 +2093,57 @@ static void on_history_item_activated(GtkListView *view, guint position, gpointe
         append_rendered_word_html(payload->title);
     }
     if (sidebar && sidebar->selection_model) {
-        gtk_single_selection_set_selected(sidebar->selection_model, GTK_INVALID_LIST_POSITION);
+        gtk_single_selection_set_selected(sidebar->selection_model, position);
     }
 }
 
 static void related_list_item_setup(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer user_data) {
     (void)factory;
     (void)user_data;
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *label = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(label), TRUE);
     gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
     gtk_label_set_use_markup(GTK_LABEL(label), TRUE);
+    gtk_widget_set_hexpand(label, TRUE);
     gtk_widget_set_margin_start(label, 12);
-    gtk_widget_set_margin_end(label, 12);
     gtk_widget_set_margin_top(label, 8);
     gtk_widget_set_margin_bottom(label, 8);
-    gtk_list_item_set_child(item, label);
+    
+    GtkWidget *star_btn = gtk_button_new_from_icon_name("non-starred-symbolic");
+    gtk_widget_add_css_class(star_btn, "flat");
+    gtk_widget_set_valign(star_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_end(star_btn, 4);
+
+    gtk_box_append(GTK_BOX(box), label);
+    gtk_box_append(GTK_BOX(box), star_btn);
+    gtk_list_item_set_child(item, box);
+}
+
+static void on_sidebar_favorite_clicked(GtkButton *btn, gpointer user_data) {
+    char *word = g_strdup(user_data);
+    if (!word) return;
+    gboolean is_favorite_now = word_list_contains_ci(favorite_words, word);
+    update_favorites_word(word, !is_favorite_now);
+    gboolean is_favorited = !is_favorite_now;
+    gtk_button_set_icon_name(btn, is_favorited ? "starred-symbolic" : "non-starred-symbolic");
+    
+    GtkListItem *item = g_object_get_data(G_OBJECT(btn), "bind-item");
+    if (item) {
+        gboolean selected = gtk_list_item_get_selected(item);
+        gtk_widget_set_visible(GTK_WIDGET(btn), selected || is_favorited);
+    }
+    g_free(word);
 }
 
 static void related_list_item_bind(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer user_data) {
     (void)factory;
     (void)user_data;
-    GtkWidget *label = gtk_list_item_get_child(item);
+    GtkWidget *box = gtk_list_item_get_child(item);
+    GtkWidget *label = gtk_widget_get_first_child(box);
+    GtkWidget *star_btn = gtk_widget_get_last_child(box);
+    
     GtkStringObject *string_object = GTK_STRING_OBJECT(gtk_list_item_get_item(item));
     guint position = gtk_list_item_get_position(item);
     const char *text = string_object ? gtk_string_object_get_string(string_object) : "";
@@ -2108,8 +2157,8 @@ static void related_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
     if (payload && payload->type == RELATED_ROW_HINT) {
         char *escaped = g_markup_escape_text(valid_text, -1);
         char *markup = g_strdup_printf("<span alpha='75%%'>%s</span>", escaped);
-        //log_markup_preview("related_list_item_bind", markup);
         gtk_label_set_markup(GTK_LABEL(label), markup);
+        gtk_widget_set_visible(star_btn, FALSE);
         g_free(markup);
         g_free(escaped);
         g_free(valid_text);
@@ -2117,6 +2166,17 @@ static void related_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
     }
 
     gtk_label_set_text(GTK_LABEL(label), valid_text);
+    
+    g_signal_handlers_disconnect_by_func(star_btn, on_sidebar_favorite_clicked, NULL);
+    g_signal_connect_data(star_btn, "clicked", G_CALLBACK(on_sidebar_favorite_clicked), g_strdup(valid_text), (GClosureNotify)g_free, 0);
+    
+    gboolean is_fav = word_list_contains_ci(favorite_words, valid_text);
+    gtk_button_set_icon_name(GTK_BUTTON(star_btn), is_fav ? "starred-symbolic" : "non-starred-symbolic");
+
+    g_object_bind_property_full(item, "selected", star_btn, "visible", 
+        G_BINDING_SYNC_CREATE,
+        transform_sidebar_star_visibility, NULL, g_strdup(valid_text), g_free);
+
     g_free(valid_text);
 }
 
@@ -2134,7 +2194,7 @@ static void on_related_item_activated(GtkListView *view, guint position, gpointe
 
     append_rendered_word_html(payload->word);
     if (related_selection_model) {
-        gtk_single_selection_set_selected(related_selection_model, GTK_INVALID_LIST_POSITION);
+        gtk_single_selection_set_selected(related_selection_model, position);
     }
 }
 
@@ -2146,7 +2206,7 @@ static void on_favorites_item_activated(GtkListView *view, guint position, gpoin
         append_rendered_word_html(payload->title);
     }
     if (sidebar && sidebar->selection_model) {
-        gtk_single_selection_set_selected(sidebar->selection_model, GTK_INVALID_LIST_POSITION);
+        gtk_single_selection_set_selected(sidebar->selection_model, position);
     }
 }
 
@@ -2408,7 +2468,7 @@ static void execute_search_now(void) {
     const char *query_raw = gtk_editable_get_text(GTK_EDITABLE(search_entry));
     char *query = normalize_headword_for_search(query_raw);
 
-    refresh_favorite_button_state();
+
 
     if (!query || strlen(query) == 0) {
         cancel_sidebar_search();
@@ -3837,10 +3897,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(content_header), search_box);
 
-    favorite_toggle_btn = gtk_button_new_from_icon_name("non-starred-symbolic");
-    gtk_widget_add_css_class(favorite_toggle_btn, "flat");
-    g_signal_connect(favorite_toggle_btn, "clicked", G_CALLBACK(on_favorite_toggle_clicked), NULL);
-    adw_header_bar_pack_end(ADW_HEADER_BAR(content_header), favorite_toggle_btn);
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(content_header), search_box);
 
     GtkWidget *content_settings_btn = gtk_menu_button_new();
     gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(content_settings_btn), "open-menu-symbolic");
@@ -3896,7 +3953,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     populate_favorites_sidebar();
     populate_groups_sidebar();
     populate_search_sidebar(NULL);
-    refresh_favorite_button_state();
+
 
     /* Auto-select first dictionary */
     if (all_dicts) {
