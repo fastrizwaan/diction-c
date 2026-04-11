@@ -3112,7 +3112,8 @@ static void apply_font_to_webview(void *user_data) {
                     "body { font-size: %dpx !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "/* Try to catch inactive highlights if supported */"
+                    "::-webkit-find-highlight { background-color: #ffff00 !important; color: #000000 !important; }"
+                    "::highlight(find) { background-color: #ffff00 !important; color: #000000 !important; }"
                     "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }",
                     ff, app_settings->font_size);
             else
@@ -3121,6 +3122,8 @@ static void apply_font_to_webview(void *user_data) {
                     "body { font-size: %dpx !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-find-highlight { background-color: #ffff00 !important; color: #000000 !important; }"
+                    "::highlight(find) { background-color: #ffff00 !important; color: #000000 !important; }"
                     "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }",
                     ff, app_settings->font_size);
         } else {
@@ -3129,12 +3132,16 @@ static void apply_font_to_webview(void *user_data) {
                     "* { font-family: \"%s\", sans-serif !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-find-highlight { background-color: #ffff00 !important; color: #000000 !important; }"
+                    "::highlight(find) { background-color: #ffff00 !important; color: #000000 !important; }"
                     "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }", ff);
             else
                 g_snprintf(css, sizeof(css),
                     "* { font-family: %s, sans-serif !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-find-highlight { background-color: #ffff00 !important; color: #000000 !important; }"
+                    "::highlight(find) { background-color: #ffff00 !important; color: #000000 !important; }"
                     "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }", ff);
         }
 
