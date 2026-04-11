@@ -9,6 +9,7 @@
 #include <glib/gstdio.h>
 #include <zlib.h>
 #include <zstd.h>
+#include <zstd_errors.h>
 #include <lzma.h>
 #include <bzlib.h>
 #include <sys/mman.h>
@@ -105,7 +106,7 @@ static unsigned char* slob_decompress(SlobCompression comp, const unsigned char 
         if (dSize == ZSTD_CONTENTSIZE_ERROR || dSize == ZSTD_CONTENTSIZE_UNKNOWN) dSize = src_len * 5 + 1024;
         unsigned char *dst = g_malloc(dSize);
         size_t actual = ZSTD_decompress(dst, dSize, src, src_len);
-        while (ZSTD_isError(actual) && actual == ZSTD_error_dstSize_tooSmall) {
+        while (ZSTD_isError(actual) && ZSTD_getErrorCode(actual) == ZSTD_error_dstSize_tooSmall) {
             dSize *= 2;
             dst = g_realloc(dst, dSize);
             actual = ZSTD_decompress(dst, dSize, src, src_len);
@@ -148,6 +149,7 @@ static unsigned char* slob_decompress(SlobCompression comp, const unsigned char 
 }
 
 DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint expected) {
+    (void)cancel_flag; (void)expected;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return NULL;
     struct stat st_file;
