@@ -13,6 +13,9 @@ static DictEntry *active_entry = NULL;
 static WebKitWebView *web_view = NULL;
 static AdwStyleManager *style_manager = NULL;
 static GtkSearchEntry *search_entry = NULL;
+static GtkStack *search_stack = NULL;
+static GtkButton *search_button = NULL;
+static GtkLabel *search_button_label = NULL;
 static char *last_search_query = NULL;
 static AppSettings *app_settings = NULL;
 static char *active_scope_id = NULL;
@@ -2422,6 +2425,7 @@ static void navigate_to_history_item(NavHistoryItem *item) {
     if (g_ascii_strcasecmp(item->view_word, item->search_query) == 0) {
         g_signal_handlers_block_by_func(search_entry, on_search_changed, NULL);
         gtk_editable_set_text(GTK_EDITABLE(search_entry), item->search_query);
+        if (search_button_label) gtk_label_set_text(GTK_LABEL(search_button_label), (item->search_query && *item->search_query) ? item->search_query : "Search");
         g_signal_handlers_unblock_by_func(search_entry, on_search_changed, NULL);
         populate_search_sidebar(item->search_query);
         execute_search_now();
@@ -2430,6 +2434,7 @@ static void navigate_to_history_item(NavHistoryItem *item) {
         gtk_editable_set_text(GTK_EDITABLE(search_entry), item->view_word);
         execute_search_now();
         gtk_editable_set_text(GTK_EDITABLE(search_entry), item->search_query);
+        if (search_button_label) gtk_label_set_text(GTK_LABEL(search_button_label), (item->search_query && *item->search_query) ? item->search_query : "Search");
         g_signal_handlers_unblock_by_func(search_entry, on_search_changed, NULL);
         populate_search_sidebar(item->search_query);
     }
@@ -2651,6 +2656,10 @@ static void append_rendered_word_html(const char *raw_word) {
 static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     (void)user_data;
     const char *query = gtk_editable_get_text(GTK_EDITABLE(entry));
+
+    if (search_button_label) {
+        gtk_label_set_text(GTK_LABEL(search_button_label), (query && *query) ? query : "Search");
+    }
 
     if (last_search_query && strcmp(query, last_search_query) == 0) return;
 
@@ -3696,6 +3705,36 @@ static void update_content_menu_button_visibility(GObject *obj, GParamSpec *pspe
     gtk_widget_set_visible(btn, !show_sidebar || collapsed);
 }
 
+static void on_search_button_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn; (void)user_data;
+    if (search_stack && search_entry) {
+        gtk_stack_set_visible_child_name(search_stack, "entry");
+        gtk_widget_grab_focus(GTK_WIDGET(search_entry));
+    }
+}
+
+static void on_search_entry_focus_leave(GtkEventControllerFocus *controller, gpointer user_data) {
+    (void)controller; (void)user_data;
+    if (search_stack) {
+        gtk_stack_set_visible_child_name(search_stack, "button");
+    }
+}
+
+static gboolean on_search_btn_drop(GtkDropTarget *target, const GValue *value, gdouble x, gdouble y, gpointer data) {
+    (void)target; (void)x; (void)y; (void)data;
+    if (G_VALUE_HOLDS_STRING(value)) {
+        const char *text = g_value_get_string(value);
+        if (text && *text && search_entry && search_stack) {
+            gtk_editable_set_text(GTK_EDITABLE(search_entry), text);
+            gtk_stack_set_visible_child_name(search_stack, "entry");
+            gtk_widget_grab_focus(GTK_WIDGET(search_entry));
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+
 static void on_activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
     AdwApplicationWindow *window = ADW_APPLICATION_WINDOW(adw_application_window_new(app));
@@ -3888,16 +3927,52 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_hexpand(GTK_WIDGET(search_entry), TRUE);
     g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
 
+    GtkEventController *focus_ctrl = gtk_event_controller_focus_new();
+    g_signal_connect(focus_ctrl, "leave", G_CALLBACK(on_search_entry_focus_leave), NULL);
+    gtk_widget_add_controller(GTK_WIDGET(search_entry), focus_ctrl);
 
+    GtkWidget *btn_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_halign(btn_content, GTK_ALIGN_FILL);
+    GtkWidget *search_icon = gtk_image_new_from_icon_name("system-search-symbolic");
+    gtk_widget_set_opacity(search_icon, 0.7); // make icon slightly dim
+    search_button_label = GTK_LABEL(gtk_label_new("Search"));
+    gtk_widget_set_opacity(GTK_WIDGET(search_button_label), 0.7); // make label text dim
+    gtk_widget_set_hexpand(GTK_WIDGET(search_button_label), TRUE);
+    // Move label to the left
+    gtk_widget_set_halign(GTK_WIDGET(search_button_label), GTK_ALIGN_START);
+    
+    gtk_box_append(GTK_BOX(btn_content), search_icon);
+    gtk_box_append(GTK_BOX(btn_content), GTK_WIDGET(search_button_label));
+
+    search_button = GTK_BUTTON(gtk_button_new());
+    gtk_button_set_child(search_button, btn_content);
+    gtk_widget_add_css_class(GTK_WIDGET(search_button), "search-button-bg");
+    gtk_widget_set_hexpand(GTK_WIDGET(search_button), TRUE);
+    g_signal_connect(search_button, "clicked", G_CALLBACK(on_search_button_clicked), NULL);
+
+    GtkDropTarget *drop_target = gtk_drop_target_new(G_TYPE_STRING, GDK_ACTION_COPY);
+    g_signal_connect(drop_target, "drop", G_CALLBACK(on_search_btn_drop), NULL);
+    gtk_widget_add_controller(GTK_WIDGET(search_button), GTK_EVENT_CONTROLLER(drop_target));
+
+    GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(button_box, TRUE);
+    gtk_box_append(GTK_BOX(button_box), GTK_WIDGET(search_button));
+
+    search_stack = GTK_STACK(gtk_stack_new());
+    gtk_stack_set_transition_type(search_stack, GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_widget_set_hexpand(GTK_WIDGET(search_stack), TRUE);
+    
+    gtk_stack_add_named(search_stack, button_box, "button");
+    gtk_stack_add_named(search_stack, GTK_WIDGET(search_entry), "entry");
+    gtk_stack_set_visible_child_name(search_stack, "button");
 
     adw_header_bar_pack_start(ADW_HEADER_BAR(content_header), nav_back_btn);
     adw_header_bar_pack_start(ADW_HEADER_BAR(content_header), nav_forward_btn);
 
-    gtk_box_append(GTK_BOX(search_box), GTK_WIDGET(search_entry));
+    gtk_box_append(GTK_BOX(search_box), GTK_WIDGET(search_stack));
 
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(content_header), search_box);
 
-    adw_header_bar_set_title_widget(ADW_HEADER_BAR(content_header), search_box);
 
     GtkWidget *content_settings_btn = gtk_menu_button_new();
     gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(content_settings_btn), "open-menu-symbolic");
@@ -3979,6 +4054,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         ".menu-item { font-weight: normal; padding: 4px 8px; min-height: 0; }"
         "overlay-split-view > separator { background: @sidebar_bg_color; min-width: 1px; opacity: 1; }"
         "headerbar.sidebar { box-shadow: none; border-bottom: none; margin: 0; padding: 0; }"
+        ".search-button-bg { background: alpha(@theme_fg_color, 0.08); border-radius: 6px; padding: 0px 8px; }"
+        ".search-button-bg:hover { background: alpha(@theme_fg_color, 0.12); }"
     );
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
