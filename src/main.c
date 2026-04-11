@@ -3106,23 +3106,36 @@ static void apply_font_to_webview(void *user_data) {
         if (app_settings->font_size > 0) {
             /* Use em-based size override so relative sizes within the page
              * still scale correctly (1em = our chosen px at root level). */
-            if (strchr(ff, ' ') && ff[0] != '"' && ff[0] != '\'')
+            if (strchr(ff, ' ') && ff[0] != '\"' && ff[0] != '\'')
                 g_snprintf(css, sizeof(css),
                     "* { font-family: \"%s\", sans-serif !important; }"
-                    "body { font-size: %dpx !important; }",
+                    "body { font-size: %dpx !important; }"
+                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "/* Try to catch inactive highlights if supported */"
+                    "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }",
                     ff, app_settings->font_size);
             else
                 g_snprintf(css, sizeof(css),
                     "* { font-family: %s, sans-serif !important; }"
-                    "body { font-size: %dpx !important; }",
+                    "body { font-size: %dpx !important; }"
+                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }",
                     ff, app_settings->font_size);
         } else {
-            if (strchr(ff, ' ') && ff[0] != '"' && ff[0] != '\'')
+            if (strchr(ff, ' ') && ff[0] != '\"' && ff[0] != '\'')
                 g_snprintf(css, sizeof(css),
-                    "* { font-family: \"%s\", sans-serif !important; }", ff);
+                    "* { font-family: \"%s\", sans-serif !important; }"
+                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }", ff);
             else
                 g_snprintf(css, sizeof(css),
-                    "* { font-family: %s, sans-serif !important; }", ff);
+                    "* { font-family: %s, sans-serif !important; }"
+                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "::selection:inactive { background-color: #ffff00 !important; color: #000000 !important; }", ff);
         }
 
         font_user_stylesheet = webkit_user_style_sheet_new(
