@@ -53,6 +53,20 @@ static char *find_bgl_resource_dir(const char *path) {
     return NULL;
 }
 
+static void trim_whitespace(char *s, size_t *len) {
+    if (!s || *len == 0) return;
+    char *start = s;
+    char *end = s + (*len) - 1;
+    while (start <= end && (unsigned char)*start <= 32) start++;
+    while (end >= start && (unsigned char)*end <= 32) end--;
+    size_t new_len = (start <= end) ? (end - start + 1) : 0;
+    if (new_len < *len) {
+        memmove(s, start, new_len);
+        s[new_len] = '\0';
+        *len = new_len;
+    }
+}
+
 static char *bgl_decode_string(const char *data, size_t len, const char *charset, size_t *out_len) {
     if (!data || len == 0) {
         if (out_len) *out_len = 0;
@@ -312,19 +326,21 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
                 char *hw_utf8 = bgl_decode_string((const char*)hw_data, hw_len, source_charset, &decoded_hw_len);
                 if (decoded_hw_len == 0) { g_free(hw_utf8); continue; }
 
+                trim_whitespace(hw_utf8, &decoded_hw_len);
+
                 /* Strip BGL $123$ numeric postfixes if present */
                 if (decoded_hw_len > 0 && hw_utf8[decoded_hw_len - 1] == '$') {
                     if (decoded_hw_len >= 2) {
-                        size_t x = decoded_hw_len - 2;
-                        while (1) {
+                        int x = (int)decoded_hw_len - 2;
+                        while (x >= 0) {
                             if (hw_utf8[x] == '$') {
                                 hw_utf8[x] = '\0';
-                                decoded_hw_len = x;
+                                decoded_hw_len = (size_t)x;
+                                trim_whitespace(hw_utf8, &decoded_hw_len);
                                 break;
                             } else if (hw_utf8[x] < '0' || hw_utf8[x] > '9') {
                                 break;
                             }
-                            if (x == 0) break;
                             x--;
                         }
                     }
