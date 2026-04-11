@@ -167,7 +167,7 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
     TreeEntry *entries = calloc(entry_cap, sizeof(TreeEntry));
     char *dict_name = NULL;
     
-    const char *default_charset = "UTF-8";
+    const char *default_charset = "WINDOWS-1252"; // Most BGLs default to Latin1 (1252) if not specified
     const char *source_charset_override = NULL;
     const char *target_charset_override = NULL;
     gboolean is_utf8 = FALSE;
@@ -198,21 +198,24 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
             if (block_data[0] == 8) {
                 unsigned int type = block_data[2];
                 if (type > 64) type -= 65;
-                if (type < BGL_CHARSET_COUNT) default_charset = bgl_charset[type];
+                if (type >= BGL_CHARSET_COUNT) type = 0;
+                default_charset = bgl_charset[type];
             }
         } else if (block_type == 3 && block_len > 1) {
-            unsigned int sub = block_data[0];
+            unsigned int sub = block_data[1]; // FIX: Block 3 metadata subtype is at byte 1, not 0!
             if (sub == 17 && block_len >= 5 && (block_data[4] & 0x80)) is_utf8 = TRUE;
             else if (sub == 26 && block_len >= 3) {
                 unsigned int type = block_data[2];
                 if (type > 64) type -= 65;
-                if (type < BGL_CHARSET_COUNT) source_charset_override = bgl_charset[type];
+                if (type >= BGL_CHARSET_COUNT) type = 0;
+                source_charset_override = bgl_charset[type];
             } else if (sub == 27 && block_len >= 3) {
                 unsigned int type = block_data[2];
                 if (type > 64) type -= 65;
-                if (type < BGL_CHARSET_COUNT) target_charset_override = bgl_charset[type];
+                if (type >= BGL_CHARSET_COUNT) type = 0;
+                target_charset_override = bgl_charset[type];
             } else if (sub == 1 && !dict_name) {
-                dict_name = g_strndup((const char *)block_data + 1, block_len - 1);
+                dict_name = g_strndup((const char *)block_data + 2, block_len - 2);
             }
         }
     }
