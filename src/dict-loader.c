@@ -93,6 +93,8 @@ DictFormat dict_detect_format(const char *path) {
         return DICT_FORMAT_MDX;
     if (ends_with_ci(path, ".bgl"))
         return DICT_FORMAT_BGL;
+    if (ends_with_ci(path, ".slob"))
+        return DICT_FORMAT_SLOB;
     return DICT_FORMAT_UNKNOWN;
 }
 
@@ -102,6 +104,7 @@ DictFormat dict_detect_format(const char *path) {
 extern DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expected);
 extern DictMmap* parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expected);
 extern DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint expected);
+extern DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint expected);
 
 DictMmap* dict_load_any(const char *path, DictFormat fmt, volatile gint *cancel_flag, gint expected_generation) {
     switch (fmt) {
@@ -116,6 +119,8 @@ DictMmap* dict_load_any(const char *path, DictFormat fmt, volatile gint *cancel_
 
         case DICT_FORMAT_BGL:
             return parse_bgl_file(path, cancel_flag, expected_generation);
+        case DICT_FORMAT_SLOB:
+            return parse_slob_file(path, cancel_flag, expected_generation);
 
         default:
             return NULL;

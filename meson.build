@@ -15,6 +15,9 @@ endif
 zlib_dep = dependency('zlib')
 json_dep = dependency('json-glib-1.0')
 archive_dep = dependency('libarchive')
+zstd_dep = dependency('libzstd')
+lzma_dep = dependency('liblzma')
+bz2_dep = cc.find_library('bz2', required: true)
 
 srcs = [
   'src/main.c',
@@ -25,6 +28,7 @@ srcs = [
   'src/dict-mmap.c',
   'src/dict-loader.c',
   'src/dict-mdx.c',
+  'src/dict-slob.c',
   'src/dict-bgl.c',
   'src/dict-ifo.c',
   'src/dict-render.c',
@@ -34,7 +38,7 @@ srcs = [
 ]
 
 executable('diction', srcs,
-  dependencies: [ gtk_dep, adw_dep, webkit_dep, zlib_dep, json_dep, archive_dep ],
+  dependencies: [ gtk_dep, adw_dep, webkit_dep, zlib_dep, json_dep, archive_dep, zstd_dep, lzma_dep, bz2_dep ],
   install: true,
 )
 

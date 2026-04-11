@@ -1245,6 +1245,18 @@ static char* process_html_tag_attribute(const char *tag, const char *attr_name, 
             }
         } else if (strstr(value, "://") || value[0] == '#' || g_str_has_prefix(value, "data:")) {
             new_value = g_strdup(value);
+        } else if (strcmp(attr_name, "href") == 0 && 
+                   !g_str_has_suffix(value, ".css") && 
+                   !g_str_has_suffix(value, ".js") &&
+                   !g_str_has_suffix(value, ".bmp") &&
+                   !g_str_has_suffix(value, ".jpg") &&
+                   !g_str_has_suffix(value, ".jpeg") &&
+                   !g_str_has_suffix(value, ".png") &&
+                   !g_str_has_suffix(value, ".gif")) {
+            /* Treat relative links in <a> tags as internal dictionary lookups */
+            char *escaped = g_uri_escape_string(value, NULL, FALSE);
+            new_value = g_strdup_printf("dict://%s", escaped);
+            g_free(escaped);
         } else {
             if (resource_dir || source_dir) {
                 new_value = build_local_resource_uri(resource_dir, source_dir, value);
@@ -1999,8 +2011,8 @@ char* dsl_render_to_html(const char *dsl_text,
         buf_append_str(&b, "</h2><div class='rendered-entry-body'>");
     }
 
-    if (format == DICT_FORMAT_MDX || format == DICT_FORMAT_STARDICT || format == DICT_FORMAT_BGL) {
-        gboolean treat_as_html = (format == DICT_FORMAT_MDX || format == DICT_FORMAT_BGL || looks_like_html(dsl_text, length));
+    if (format == DICT_FORMAT_MDX || format == DICT_FORMAT_STARDICT || format == DICT_FORMAT_BGL || format == DICT_FORMAT_SLOB) {
+        gboolean treat_as_html = (format == DICT_FORMAT_MDX || format == DICT_FORMAT_BGL || format == DICT_FORMAT_SLOB || looks_like_html(dsl_text, length));
         gboolean treat_as_tagged_plain = (!treat_as_html && looks_like_tagged_plain_markup(dsl_text, length));
 
         if (!treat_as_html && !treat_as_tagged_plain) {
