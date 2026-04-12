@@ -828,6 +828,11 @@ static gboolean classify_search_candidate(const char *query_key,
                                           SearchBucket *bucket_out,
                                           double *fuzzy_score_out) {
     if (!query_key || !candidate_key || !*candidate_key) {
+        if (candidate_key && *candidate_key && query_key && !*query_key) {
+            if (bucket_out) *bucket_out = SEARCH_BUCKET_PREFIX;
+            if (fuzzy_score_out) *fuzzy_score_out = 0.0;
+            return TRUE;
+        }
         return FALSE;
     }
 
@@ -1557,15 +1562,12 @@ static void populate_search_sidebar(const char *query) {
     cancel_sidebar_search();
 
     char *clean = normalize_headword_for_search(query);
-    if (!clean) {
-        populate_search_sidebar_status("Type to search dictionaries…", NULL);
-        g_free(clean);
-        return;
-    }
+    // If clean is NULL, it means the query is empty or whitespace-only.
+    // We allow this to show all headwords.
 
     sidebar_search_state = g_new0(SidebarSearchState, 1);
-    sidebar_search_state->query = clean;
-    sidebar_search_state->query_key = g_utf8_casefold(clean, -1);
+    sidebar_search_state->query = clean ? clean : g_strdup("");
+    sidebar_search_state->query_key = g_utf8_casefold(sidebar_search_state->query, -1);
     sidebar_search_state->query_len = utf8_length_or_bytes(sidebar_search_state->query_key);
     sidebar_search_state->seen_words = g_hash_table_new_full(
         g_str_hash, g_str_equal, g_free, NULL);
@@ -3112,9 +3114,8 @@ static void apply_font_to_webview(void *user_data) {
                     "body { font-size: %dpx !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-find-highlight { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::highlight(find) { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::selection:inactive { background-color: rgba(204, 170, 0, 0.5) !important; }",
+                    "/* Try to catch inactive highlights if supported */"
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }",
                     ff, app_settings->font_size);
             else
                 g_snprintf(css, sizeof(css),
@@ -3122,9 +3123,7 @@ static void apply_font_to_webview(void *user_data) {
                     "body { font-size: %dpx !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-find-highlight { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::highlight(find) { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::selection:inactive { background-color: rgba(204, 170, 0, 0.5) !important; }",
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }",
                     ff, app_settings->font_size);
         } else {
             if (strchr(ff, ' ') && ff[0] != '\"' && ff[0] != '\'')
@@ -3132,17 +3131,13 @@ static void apply_font_to_webview(void *user_data) {
                     "* { font-family: \"%s\", sans-serif !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-find-highlight { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::highlight(find) { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::selection:inactive { background-color: rgba(204, 170, 0, 0.5) !important; }", ff);
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }", ff);
             else
                 g_snprintf(css, sizeof(css),
                     "* { font-family: %s, sans-serif !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-find-highlight { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::highlight(find) { background-color: rgba(204, 170, 0, 0.5) !important; }"
-                    "::selection:inactive { background-color: rgba(204, 170, 0, 0.5) !important; }", ff);
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }", ff);
         }
 
         font_user_stylesheet = webkit_user_style_sheet_new(
