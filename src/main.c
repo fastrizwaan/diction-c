@@ -2078,11 +2078,19 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
         WebKitNavigationAction *na = webkit_navigation_policy_decision_get_navigation_action(nd);
         WebKitURIRequest *req = webkit_navigation_action_get_request(na);
         const char *uri = webkit_uri_request_get_uri(req);
-        fprintf(stderr, "[LINK CLICKED] URI: %s\n", uri);
+        if (g_str_has_prefix(uri, "dict://")) {
+            char *unescaped = g_uri_unescape_string(uri + 7, NULL);
+            fprintf(stderr, "[LINK CLICKED]: '%s'\n", unescaped ? unescaped : uri + 7);
+            g_free(unescaped);
+        } else if (g_str_has_prefix(uri, "sound://")) {
+            /* Keep existing audio logic or omit logging if not requested */
+        } else if (g_strcmp0(uri, "file:///") != 0) {
+            fprintf(stderr, "[LINK CLICKED]: '%s'\n", uri);
+        }
         if (g_str_has_prefix(uri, "dict://")) {
             const char *word = uri + 7;
             char *unescaped = g_uri_unescape_string(word, NULL);
-            fprintf(stderr, "[DICT LINK] Searching for: %s\n", unescaped ? unescaped : word);
+            // fprintf(stderr, "[DICT LINK] Searching for: %s\n", unescaped ? unescaped : word);
             gtk_editable_set_text(GTK_EDITABLE(user_data), unescaped ? unescaped : word);
             g_free(unescaped);
             webkit_policy_decision_ignore(d);
@@ -2427,6 +2435,7 @@ static void on_related_item_activated(GtkListView *view, guint position, gpointe
         return;
     }
 
+    fprintf(stderr, "[Result Clicked]: '%s'\n", payload->word);
     append_rendered_word_html(payload->word);
     if (related_selection_model) {
         gtk_single_selection_set_selected(related_selection_model, position);
@@ -2709,6 +2718,10 @@ static void execute_search_now(void) {
     const char *query_raw = gtk_editable_get_text(GTK_EDITABLE(search_entry));
     char *query = normalize_headword_for_search(query_raw);
 
+    if (query && *query) {
+        fprintf(stderr, "[Query]: '%s'\n", query);
+    }
+
 
 
     if (!query || strlen(query) == 0) {
@@ -2937,13 +2950,40 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
     }
 
     if (e && e->dict && flat_index_count(e->dict->index) > 0) {
-        const FlatTreeEntry *node = flat_index_random(e->dict->index);
-        if (node) {
+        int attempts = 0;
+        const FlatTreeEntry *node = NULL;
+        char *clean_hw = NULL;
+        char *tmp_hw = NULL;
+
+        while (attempts < 10) {
+            node = flat_index_random(e->dict->index);
+            if (!node) break;
             const char *word = e->dict->data + node->h_off;
             size_t len = node->h_len;
-            char *tmp_hw = g_strndup(word, len);
-            char *clean_hw = normalize_headword_for_search(tmp_hw);
+            tmp_hw = g_strndup(word, len);
+            clean_hw = normalize_headword_for_search(tmp_hw);
+            
+            if (clean_hw && *clean_hw && !text_has_replacement_char(clean_hw)) {
+                break;
+            }
+            
+            g_free(tmp_hw);
+            g_free(clean_hw);
+            tmp_hw = NULL;
+            clean_hw = NULL;
+            attempts++;
+        }
+
+        if (node && tmp_hw) {
+            fprintf(stderr, "[Random word]: '%s'\n", clean_hw ? clean_hw : tmp_hw);
+            
+            g_signal_handlers_block_by_func(search_entry, on_search_changed, NULL);
             gtk_editable_set_text(GTK_EDITABLE(search_entry), clean_hw ? clean_hw : tmp_hw);
+            if (search_button_label) {
+                gtk_label_set_text(GTK_LABEL(search_button_label), (clean_hw && *clean_hw) ? clean_hw : tmp_hw);
+            }
+            g_signal_handlers_unblock_by_func(search_entry, on_search_changed, NULL);
+
             g_free(tmp_hw);
             if (clean_hw) g_free(clean_hw);
             // Search will be triggered by "search-changed" signal, but we want it instantly
