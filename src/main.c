@@ -2154,6 +2154,17 @@ static void on_find_close(GtkButton *btn, gpointer user_data) {
         gtk_revealer_set_reveal_child(find_revealer, FALSE);
         if (web_view) {
             webkit_find_controller_search_finish(webkit_web_view_get_find_controller(web_view));
+            const char *clear_js = 
+                "(function() {"
+                "  const marks = document.querySelectorAll('mark.diction-match');"
+                "  marks.forEach(m => {"
+                "    const parent = m.parentNode;"
+                "    if (!parent) return;"
+                "    while(m.firstChild) parent.insertBefore(m.firstChild, m);"
+                "    parent.removeChild(m);"
+                "  });"
+                "})();";
+            webkit_web_view_evaluate_javascript(web_view, clear_js, -1, NULL, NULL, NULL, NULL, NULL);
         }
         gtk_widget_grab_focus(GTK_WIDGET(web_view));
     }
@@ -2172,6 +2183,51 @@ static void on_find_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     webkit_find_controller_search(fc, text, 
         WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE | WEBKIT_FIND_OPTIONS_WRAP_AROUND, 
         G_MAXUINT);
+
+    /* Manual highlighting to ensure readability in dark mode */
+    char *escaped_text = g_strescape(text, NULL);
+    char *js = g_strdup_printf(
+        "(function(text) {"
+        "  function clear() {"
+        "    const marks = document.querySelectorAll('mark.diction-match');"
+        "    marks.forEach(m => {"
+        "      const parent = m.parentNode;"
+        "      if (!parent) return;"
+        "      while(m.firstChild) parent.insertBefore(m.firstChild, m);"
+        "      parent.removeChild(m);"
+        "    });"
+        "  }"
+        "  clear();"
+        "  if (!text) return;"
+        "  const regex = new RegExp(text.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&'), 'gi');"
+        "  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);"
+        "  const nodes = [];"
+        "  let node;"
+        "  while(node = walker.nextNode()) nodes.push(node);"
+        "  nodes.forEach(node => {"
+        "    const p = node.parentNode;"
+        "    if (p && (p.tagName === 'SCRIPT' || p.tagName === 'STYLE' || p.tagName === 'MARK')) return;"
+        "    const val = node.nodeValue;"
+        "    let match;"
+        "    const matches = [];"
+        "    while ((match = regex.exec(val)) !== null) matches.push(match);"
+        "    for (let i = matches.length - 1; i >= 0; i--) {"
+        "      const m = matches[i];"
+        "      const range = document.createRange();"
+        "      try {"
+        "        range.setStart(node, m.index);"
+        "        range.setEnd(node, m.index + m[0].length);"
+        "        const mark = document.createElement('mark');"
+        "        mark.className = 'diction-match';"
+        "        range.surroundContents(mark);"
+        "      } catch(e) {}"
+        "    }"
+        "  });"
+        "})('%s');", escaped_text);
+    
+    webkit_web_view_evaluate_javascript(web_view, js, -1, NULL, NULL, NULL, NULL, NULL);
+    g_free(js);
+    g_free(escaped_text);
 }
 
 static void on_find_counted_matches(WebKitFindController *fc, guint count, gpointer user_data) {
@@ -3146,45 +3202,48 @@ static void apply_font_to_webview(void *user_data) {
 
         const char *ff = (app_settings->font_family && *app_settings->font_family)
                          ? app_settings->font_family : "sans-serif";
-        char css[512];
-        const char *scheme = (style_manager && adw_style_manager_get_dark(style_manager)) ? "dark !important" : "light !important";
+        char css[1024];
+
         if (app_settings->font_size > 0) {
             /* Use em-based size override so relative sizes within the page
              * still scale correctly (1em = our chosen px at root level). */
             if (strchr(ff, ' ') && ff[0] != '\"' && ff[0] != '\'')
                 g_snprintf(css, sizeof(css),
-                    ":root { color-scheme: %s; }"
                     "* { font-family: \"%s\", sans-serif !important; }"
                     "body { font-size: %dpx !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "/* Try to catch inactive highlights if supported */"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }",
-                    scheme, ff, app_settings->font_size);
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
+                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }",
+                    ff, app_settings->font_size);
             else
                 g_snprintf(css, sizeof(css),
-                    ":root { color-scheme: %s; }"
                     "* { font-family: %s, sans-serif !important; }"
                     "body { font-size: %dpx !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }",
-                    scheme, ff, app_settings->font_size);
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
+                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }",
+                    ff, app_settings->font_size);
         } else {
             if (strchr(ff, ' ') && ff[0] != '\"' && ff[0] != '\'')
                 g_snprintf(css, sizeof(css),
-                    ":root { color-scheme: %s; }"
                     "* { font-family: \"%s\", sans-serif !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }", scheme, ff);
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
+                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }", ff);
             else
                 g_snprintf(css, sizeof(css),
-                    ":root { color-scheme: %s; }"
                     "* { font-family: %s, sans-serif !important; }"
                     "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
                     "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }", scheme, ff);
+                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
+                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }", ff);
         }
 
         font_user_stylesheet = webkit_user_style_sheet_new(
