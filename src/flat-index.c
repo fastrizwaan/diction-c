@@ -7,26 +7,39 @@
 
 /* ── helpers ──────────────────────────────────────────── */
 
+
+static bool is_dsl_ignored(char c) {
+    return g_ascii_isspace(c) || 
+           c == '{' || c == '}' || c == '\\' || c == '~' || 
+           c == '/' || c == ',' || c == '.' || c == '-' || 
+           c == '(' || c == ')' || c == '[' || c == ']' || c == '_';
+}
+
 static int compare_dsl_agnostic(const char *raw, size_t raw_len, const char *clean, size_t clean_len) {
     size_t r = 0, c = 0;
+
+    while (r < raw_len && is_dsl_ignored(raw[r])) r++;
+    while (c < clean_len && is_dsl_ignored(clean[c])) c++;
+
     while (r < raw_len && c < clean_len) {
-        char rc = raw[r];
-        if (rc == '{' || rc == '}' || rc == '\\' || rc == '~') {
+        if (is_dsl_ignored(raw[r])) {
             r++;
             continue;
         }
-        char cc = clean[c];
-        int diff = g_ascii_tolower(rc) - g_ascii_tolower(cc);
+        if (is_dsl_ignored(clean[c])) {
+            c++;
+            continue;
+        }
+
+        int diff = g_ascii_tolower(raw[r]) - g_ascii_tolower(clean[c]);
         if (diff != 0) return diff;
         r++;
         c++;
     }
-    // If we exhausted raw but it still has formatting chars left, skip them
-    while (r < raw_len) {
-        char rc = raw[r];
-        if (rc == '{' || rc == '}' || rc == '\\' || rc == '~') r++;
-        else break;
-    }
+
+    while (r < raw_len && is_dsl_ignored(raw[r])) r++;
+    while (c < clean_len && is_dsl_ignored(clean[c])) c++;
+
     if (r == raw_len && c == clean_len) return 0;
     if (r == raw_len) return -1;
     return 1;
@@ -42,14 +55,21 @@ static int compare_prefix(const char *data, const FlatTreeEntry *entry,
     size_t r = 0, c = 0;
     const char *raw = data + entry->h_off;
     size_t raw_len = entry->h_len;
+
+    while (r < raw_len && is_dsl_ignored(raw[r])) r++;
+    while (c < plen && is_dsl_ignored(prefix[c])) c++;
+
     while (r < raw_len && c < plen) {
-        char rc = raw[r];
-        if (rc == '{' || rc == '}' || rc == '\\' || rc == '~') {
+        if (is_dsl_ignored(raw[r])) {
             r++;
             continue;
         }
-        char cc = prefix[c];
-        int diff = g_ascii_tolower(rc) - g_ascii_tolower(cc);
+        if (is_dsl_ignored(prefix[c])) {
+            c++;
+            continue;
+        }
+
+        int diff = g_ascii_tolower(raw[r]) - g_ascii_tolower(prefix[c]);
         if (diff != 0) return diff;
         r++;
         c++;
@@ -74,27 +94,30 @@ static int sort_compare(const void *a, const void *b) {
     size_t lb = (size_t)eb->h_len;
 
     size_t i = 0, j = 0;
+
+    /* Skip leading whitespace */
+    while (i < la && g_ascii_isspace(ra[i])) i++;
+    while (j < lb && g_ascii_isspace(rb[j])) j++;
+
     while (i < la && j < lb) {
-        char ca = ra[i];
-        if (ca == '{' || ca == '}' || ca == '\\' || ca == '~') { i++; continue; }
-        char cb = rb[j];
-        if (cb == '{' || cb == '}' || cb == '\\' || cb == '~') { j++; continue; }
-        
-        int diff = g_ascii_tolower(ca) - g_ascii_tolower(cb);
+        if (is_dsl_ignored(ra[i])) {
+            i++;
+            continue;
+        }
+        if (is_dsl_ignored(rb[j])) {
+            j++;
+            continue;
+        }
+
+        int diff = g_ascii_tolower(ra[i]) - g_ascii_tolower(rb[j]);
         if (diff != 0) return diff;
         i++;
         j++;
     }
-    while (i < la) {
-        char ca = ra[i];
-        if (ca == '{' || ca == '}' || ca == '\\' || ca == '~') i++;
-        else break;
-    }
-    while (j < lb) {
-        char cb = rb[j];
-        if (cb == '{' || cb == '}' || cb == '\\' || cb == '~') j++;
-        else break;
-    }
+
+    while (i < la && is_dsl_ignored(ra[i])) i++;
+    while (j < lb && is_dsl_ignored(rb[j])) j++;
+
     if (i == la && j == lb) return 0;
     if (i == la) return -1;
     return 1;

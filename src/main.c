@@ -1330,8 +1330,11 @@ static gboolean fast_strncasestr(const char *haystack, size_t haystack_len, cons
         while (h_idx < haystack_len && n_idx < needle_len) {
             char hc = haystack[h_idx];
             
-            /* Fast-skip common DSL formatting characters during the match */
-            if (hc == '{' || hc == '}' || hc == '\\' || hc == '~') {
+            /* Fast-skip common DSL formatting characters, punctuation and whitespace during the match */
+            if (g_ascii_isspace(hc) || 
+                hc == '{' || hc == '}' || hc == '\\' || hc == '~' || 
+                hc == '/' || hc == ',' || hc == '.' || hc == '-' || 
+                hc == '(' || hc == ')' || hc == '[' || hc == ']' || hc == '_') {
                 h_idx++;
                 continue;
             }
