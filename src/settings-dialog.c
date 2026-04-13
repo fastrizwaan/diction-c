@@ -1526,8 +1526,27 @@ static void on_system_switch_action(GtkSwitch *sw, GParamSpec *pspec, SettingsDi
         data->settings->close_to_tray = active;
     } else if (strcmp(key, "scan_popup_enabled") == 0) {
         data->settings->scan_popup_enabled = active;
+    } else if (strcmp(key, "scan_selection_enabled") == 0) {
+        data->settings->scan_selection_enabled = active;
+    } else if (strcmp(key, "scan_clipboard_enabled") == 0) {
+        data->settings->scan_clipboard_enabled = active;
     }
     
+    settings_save(data->settings);
+
+    if (data->soft_reload_callback) {
+        data->soft_reload_callback(data->user_data);
+    }
+}
+
+static void on_scan_modifier_row_changed(AdwComboRow *row, GParamSpec *pspec, SettingsDialogData *data) {
+    (void)pspec;
+    const char *values[] = {"none", "ctrl", "alt", "meta"};
+    guint idx = adw_combo_row_get_selected(row);
+    if (idx >= G_N_ELEMENTS(values)) return;
+
+    g_free(data->settings->scan_modifier_key);
+    data->settings->scan_modifier_key = g_strdup(values[idx]);
     settings_save(data->settings);
 
     if (data->soft_reload_callback) {
@@ -1738,18 +1757,18 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
     AdwSwitchRow *tray_row = ADW_SWITCH_ROW(adw_switch_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(tray_row), "Enable System Tray Icon");
     adw_switch_row_set_active(tray_row, settings->tray_icon_enabled);
-    g_object_set_data(G_OBJECT(tray_row), "setting-key", "tray_icon_enabled");
-    g_signal_connect(adw_action_row_get_activatable_widget(ADW_ACTION_ROW(tray_row)), 
-                     "notify::active", G_CALLBACK(on_system_switch_action), data);
+    GtkWidget *tray_switch = adw_action_row_get_activatable_widget(ADW_ACTION_ROW(tray_row));
+    g_object_set_data(G_OBJECT(tray_switch), "setting-key", "tray_icon_enabled");
+    g_signal_connect(tray_switch, "notify::active", G_CALLBACK(on_system_switch_action), data);
     adw_preferences_group_add(tray_group, GTK_WIDGET(tray_row));
 
     AdwSwitchRow *close_to_tray_row = ADW_SWITCH_ROW(adw_switch_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(close_to_tray_row), "Close Window to Tray");
     adw_action_row_set_subtitle(ADW_ACTION_ROW(close_to_tray_row), "Closing main window hides it instead of quitting");
     adw_switch_row_set_active(close_to_tray_row, settings->close_to_tray);
-    g_object_set_data(G_OBJECT(close_to_tray_row), "setting-key", "close_to_tray");
-    g_signal_connect(adw_action_row_get_activatable_widget(ADW_ACTION_ROW(close_to_tray_row)), 
-                     "notify::active", G_CALLBACK(on_system_switch_action), data);
+    GtkWidget *close_to_tray_switch = adw_action_row_get_activatable_widget(ADW_ACTION_ROW(close_to_tray_row));
+    g_object_set_data(G_OBJECT(close_to_tray_switch), "setting-key", "close_to_tray");
+    g_signal_connect(close_to_tray_switch, "notify::active", G_CALLBACK(on_system_switch_action), data);
     adw_preferences_group_add(tray_group, GTK_WIDGET(close_to_tray_row));
 
     g_object_bind_property(tray_row, "active", close_to_tray_row, "sensitive", G_BINDING_SYNC_CREATE);
@@ -1761,20 +1780,53 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
 
     AdwSwitchRow *scan_row = ADW_SWITCH_ROW(adw_switch_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(scan_row), "Enable Scan Popup");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(scan_row), "Look up when selecting text (PRIMARY clipboard)");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(scan_row), "Look up selected or copied words in a popup");
     adw_switch_row_set_active(scan_row, settings->scan_popup_enabled);
-    g_object_set_data(G_OBJECT(scan_row), "setting-key", "scan_popup_enabled");
-    g_signal_connect(adw_action_row_get_activatable_widget(ADW_ACTION_ROW(scan_row)), 
-                     "notify::active", G_CALLBACK(on_system_switch_action), data);
+    GtkWidget *scan_switch = adw_action_row_get_activatable_widget(ADW_ACTION_ROW(scan_row));
+    g_object_set_data(G_OBJECT(scan_switch), "setting-key", "scan_popup_enabled");
+    g_signal_connect(scan_switch, "notify::active", G_CALLBACK(on_system_switch_action), data);
     adw_preferences_group_add(popup_group, GTK_WIDGET(scan_row));
+
+    AdwSwitchRow *scan_selection_row = ADW_SWITCH_ROW(adw_switch_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(scan_selection_row), "Scan Selected Text");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(scan_selection_row), "Watch PRIMARY selection changes");
+    adw_switch_row_set_active(scan_selection_row, settings->scan_selection_enabled);
+    GtkWidget *scan_selection_switch = adw_action_row_get_activatable_widget(ADW_ACTION_ROW(scan_selection_row));
+    g_object_set_data(G_OBJECT(scan_selection_switch), "setting-key", "scan_selection_enabled");
+    g_signal_connect(scan_selection_switch, "notify::active", G_CALLBACK(on_system_switch_action), data);
+    adw_preferences_group_add(popup_group, GTK_WIDGET(scan_selection_row));
+
+    AdwSwitchRow *scan_clipboard_row = ADW_SWITCH_ROW(adw_switch_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(scan_clipboard_row), "Scan Copied Text");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(scan_clipboard_row), "Watch regular clipboard changes, including Ctrl+C");
+    adw_switch_row_set_active(scan_clipboard_row, settings->scan_clipboard_enabled);
+    GtkWidget *scan_clipboard_switch = adw_action_row_get_activatable_widget(ADW_ACTION_ROW(scan_clipboard_row));
+    g_object_set_data(G_OBJECT(scan_clipboard_switch), "setting-key", "scan_clipboard_enabled");
+    g_signal_connect(scan_clipboard_switch, "notify::active", G_CALLBACK(on_system_switch_action), data);
+    adw_preferences_group_add(popup_group, GTK_WIDGET(scan_clipboard_row));
+
+    AdwComboRow *scan_modifier_row = ADW_COMBO_ROW(adw_combo_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(scan_modifier_row), "Scan Modifier");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(scan_modifier_row), "Automatic popup only runs while this key is held");
+    GtkStringList *scan_modifier_model = gtk_string_list_new((const char *[]){
+        "No Modifier", "Ctrl", "Alt", "Meta / Super", NULL});
+    adw_combo_row_set_model(scan_modifier_row, G_LIST_MODEL(scan_modifier_model));
+    g_object_unref(scan_modifier_model);
+    guint scan_modifier_idx = 0;
+    if (g_strcmp0(settings->scan_modifier_key, "ctrl") == 0) scan_modifier_idx = 1;
+    else if (g_strcmp0(settings->scan_modifier_key, "alt") == 0) scan_modifier_idx = 2;
+    else if (g_strcmp0(settings->scan_modifier_key, "meta") == 0) scan_modifier_idx = 3;
+    adw_combo_row_set_selected(scan_modifier_row, scan_modifier_idx);
+    g_signal_connect(scan_modifier_row, "notify::selected", G_CALLBACK(on_scan_modifier_row_changed), data);
+    adw_preferences_group_add(popup_group, GTK_WIDGET(scan_modifier_row));
 
     AdwPreferencesGroup *shortcut_group = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
     adw_preferences_group_set_title(shortcut_group, "Global Shortcut");
     adw_preferences_page_add(system_page, shortcut_group);
 
     GtkWidget *shortcut_row = adw_action_row_new();
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(shortcut_row), "Toggle Main Window");
-    adw_action_row_set_subtitle(ADW_ACTION_ROW(shortcut_row), "Requires XDG Desktop Portal");
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(shortcut_row), "Scan Selected Text");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(shortcut_row), "Ctrl+Alt+D, requires XDG Desktop Portal");
     
     AdwButtonRow *shortcut_btn_row = ADW_BUTTON_ROW(adw_button_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(shortcut_btn_row), "Configure Global Shortcut");

@@ -4,12 +4,26 @@
 
 static GDBusConnection *dbus_conn = NULL;
 static guint sni_id = 0;
+static guint sni_legacy_id = 0;
 static guint dbusmenu_id = 0;
 static GtkApplication *app_ref = NULL;
 static GtkWindow *main_win_ref = NULL;
 static void (*scan_toggle_cb)(void) = NULL;
 static void (*quit_app_cb)(void) = NULL;
 static gboolean current_scan_active = FALSE;
+static char *owned_bus_name = NULL;
+
+static const char *tray_icon_name(void) {
+    GdkDisplay *display = gdk_display_get_default();
+    if (display) {
+        GtkIconTheme *theme = gtk_icon_theme_get_for_display(display);
+        if (theme && gtk_icon_theme_has_icon(theme, "io.github.fastrizwaan.diction")) {
+            return "io.github.fastrizwaan.diction";
+        }
+    }
+
+    return "accessories-dictionary";
+}
 
 /* SNI XML interface */
 static const gchar sni_xml[] =
@@ -185,7 +199,7 @@ static void dbusmenu_handle_method(GDBusConnection *connection,
                 // Show/Hide
                 if (main_win_ref) {
                     if (gtk_widget_get_visible(GTK_WIDGET(main_win_ref))) {
-                        gtk_widget_hide(GTK_WIDGET(main_win_ref));
+                        gtk_widget_set_visible(GTK_WIDGET(main_win_ref), FALSE);
                     } else {
                         gtk_window_present(main_win_ref);
                     }
@@ -243,7 +257,7 @@ static void sni_handle_method(GDBusConnection *connection,
     if (g_strcmp0(method_name, "Activate") == 0) {
         if (main_win_ref) {
             if (gtk_widget_get_visible(GTK_WIDGET(main_win_ref))) {
-                gtk_widget_hide(GTK_WIDGET(main_win_ref));
+                gtk_widget_set_visible(GTK_WIDGET(main_win_ref), FALSE);
             } else {
                 gtk_window_present(main_win_ref);
             }
@@ -270,11 +284,13 @@ static GVariant* sni_get_property(GDBusConnection *connection,
     if (g_strcmp0(property_name, "Id") == 0) return g_variant_new_string("diction");
     if (g_strcmp0(property_name, "Title") == 0) return g_variant_new_string("Diction");
     if (g_strcmp0(property_name, "Status") == 0) return g_variant_new_string("Active");
-    if (g_strcmp0(property_name, "IconName") == 0) return g_variant_new_string("io.github.fastrizwaan.diction");
+    if (g_strcmp0(property_name, "WindowId") == 0) return g_variant_new_int32(0);
+    if (g_strcmp0(property_name, "IconName") == 0) return g_variant_new_string(tray_icon_name());
+    if (g_strcmp0(property_name, "AttentionIconName") == 0) return g_variant_new_string("");
     if (g_strcmp0(property_name, "ItemIsMenu") == 0) return g_variant_new_boolean(FALSE);
     if (g_strcmp0(property_name, "Menu") == 0) {
         char path[128];
-        snprintf(path, sizeof(path), "/org/ayatana/NotificationItem/diction/Menu");
+        snprintf(path, sizeof(path), "/StatusNotifierItem/Menu");
         return g_variant_new_object_path(path);
     }
     return NULL;
@@ -287,14 +303,24 @@ static const GDBusInterfaceVTable sni_vtable = {
     {0}
 };
 
+static void register_sni_cb(GObject *source_object, GAsyncResult *res, gpointer user_data) {
+    (void)user_data;
+    GError *err = NULL;
+    GVariant *reply = g_dbus_connection_call_finish(G_DBUS_CONNECTION(source_object), res, &err);
+    if (err) {
+        g_warning("Failed to register StatusNotifierItem: %s", err->message);
+        g_error_free(err);
+        return;
+    }
+    if (reply) {
+        g_variant_unref(reply);
+    }
+}
+
 static void register_sni_with_watcher(void) {
-    if (!dbus_conn) return;
+    if (!dbus_conn || !owned_bus_name) return;
 
-    /* KDE / Freedesktop StatusNotifierWatcher */
-    char obj_path[128];
-    snprintf(obj_path, sizeof(obj_path), "/org/ayatana/NotificationItem/diction");
-
-    GVariant *args = g_variant_new("(s)", obj_path);
+    GVariant *args = g_variant_new("(s)", owned_bus_name);
     
     // Attempt KDE watcher first
     g_dbus_connection_call(dbus_conn,
@@ -307,7 +333,7 @@ static void register_sni_with_watcher(void) {
         G_DBUS_CALL_FLAGS_NONE,
         -1,
         NULL,
-        NULL, NULL);
+        register_sni_cb, NULL);
 }
 
 static void on_bus_acquired(GDBusConnection *connection, const gchar *name, gpointer user_data) {
@@ -331,7 +357,7 @@ static void on_bus_acquired(GDBusConnection *connection, const gchar *name, gpoi
     }
 
     char base_path[128];
-    snprintf(base_path, sizeof(base_path), "/org/ayatana/NotificationItem/diction");
+    snprintf(base_path, sizeof(base_path), "/StatusNotifierItem");
 
     sni_id = g_dbus_connection_register_object(connection, base_path, sni_info->interfaces[0], &sni_vtable, NULL, NULL, &err);
     if (!sni_id) {
@@ -339,7 +365,15 @@ static void on_bus_acquired(GDBusConnection *connection, const gchar *name, gpoi
         g_clear_error(&err);
     }
 
-    char menu_path[128];
+    char legacy_path[128];
+    snprintf(legacy_path, sizeof(legacy_path), "/org/ayatana/NotificationItem/diction");
+    sni_legacy_id = g_dbus_connection_register_object(connection, legacy_path, sni_info->interfaces[0], &sni_vtable, NULL, NULL, &err);
+    if (!sni_legacy_id) {
+        g_warning("Failed to register legacy SNI object: %s", err->message);
+        g_clear_error(&err);
+    }
+
+    char menu_path[160];
     snprintf(menu_path, sizeof(menu_path), "%s/Menu", base_path);
     dbusmenu_id = g_dbus_connection_register_object(connection, menu_path, dbusmenu_info->interfaces[0], &dbusmenu_vtable, NULL, NULL, &err);
     if (!dbusmenu_id) {
@@ -365,11 +399,11 @@ void tray_icon_init(GtkApplication *app, GtkWindow *main_window,
     scan_toggle_cb = toggle_scan_cb;
     quit_app_cb = quit_cb;
 
-    char bus_name[128];
-    snprintf(bus_name, sizeof(bus_name), "org.kde.StatusNotifierItem-%d-1", getpid());
+    g_free(owned_bus_name);
+    owned_bus_name = g_strdup_printf("org.kde.StatusNotifierItem-%d-1", getpid());
 
     bus_owner_id = g_bus_own_name(G_BUS_TYPE_SESSION,
-                                  bus_name,
+                                  owned_bus_name,
                                   G_BUS_NAME_OWNER_FLAGS_NONE,
                                   on_bus_acquired,
                                   NULL,
@@ -379,6 +413,20 @@ void tray_icon_init(GtkApplication *app, GtkWindow *main_window,
 }
 
 void tray_icon_destroy(void) {
+    if (dbus_conn) {
+        if (dbusmenu_id != 0) {
+            g_dbus_connection_unregister_object(dbus_conn, dbusmenu_id);
+            dbusmenu_id = 0;
+        }
+        if (sni_legacy_id != 0) {
+            g_dbus_connection_unregister_object(dbus_conn, sni_legacy_id);
+            sni_legacy_id = 0;
+        }
+        if (sni_id != 0) {
+            g_dbus_connection_unregister_object(dbus_conn, sni_id);
+            sni_id = 0;
+        }
+    }
     if (bus_owner_id != 0) {
         g_bus_unown_name(bus_owner_id);
         bus_owner_id = 0;
@@ -388,16 +436,20 @@ void tray_icon_destroy(void) {
         dbus_conn = NULL;
     }
     sni_id = 0;
+    sni_legacy_id = 0;
     dbusmenu_id = 0;
     app_ref = NULL;
     main_win_ref = NULL;
+    scan_toggle_cb = NULL;
+    quit_app_cb = NULL;
+    g_clear_pointer(&owned_bus_name, g_free);
 }
 
 void tray_icon_set_scan_active(gboolean active) {
     current_scan_active = active;
     if (dbus_conn && dbusmenu_id) {
         char menu_path[128];
-        snprintf(menu_path, sizeof(menu_path), "/org/ayatana/NotificationItem/diction/Menu");
+        snprintf(menu_path, sizeof(menu_path), "/StatusNotifierItem/Menu");
         g_dbus_connection_emit_signal(dbus_conn,
                                       NULL,
                                       menu_path,

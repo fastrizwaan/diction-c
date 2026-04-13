@@ -62,6 +62,20 @@ static gboolean startup_loading_active = FALSE;
 static gboolean dictionary_loading_in_progress = FALSE;
 static gboolean startup_random_word_pending = FALSE;
 
+#define GLOBAL_SHORTCUT_ID "scan-clipboard"
+#define GLOBAL_SHORTCUT_TRIGGER "CTRL+ALT+d"
+
+typedef enum {
+    PORTAL_REQUEST_CREATE_SHORTCUT_SESSION = 1,
+    PORTAL_REQUEST_BIND_SHORTCUTS = 2
+} PortalRequestKind;
+
+static GDBusConnection *global_shortcut_conn = NULL;
+static char *global_shortcut_session_handle = NULL;
+static guint global_shortcut_signal_sub_id = 0;
+static guint global_shortcut_create_response_sub_id = 0;
+static guint global_shortcut_bind_response_sub_id = 0;
+
 typedef enum {
     SIDEBAR_ROW_HINT = 0,
     SIDEBAR_ROW_WORD,
@@ -1166,6 +1180,11 @@ static GtkWidget *sidebar_list_item_make_label(void) {
 
 static void on_sidebar_favorite_clicked(GtkButton *btn, gpointer user_data);
 
+static void free_signal_data(gpointer data, GClosure *closure) {
+    (void)closure;
+    g_free(data);
+}
+
 static gboolean transform_sidebar_star_visibility(GBinding *binding, const GValue *from_value, GValue *to_value, gpointer user_data) {
     (void)binding;
     gboolean selected = g_value_get_boolean(from_value);
@@ -1230,7 +1249,7 @@ static void sidebar_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
     g_object_set_data(G_OBJECT(star_btn), "bind-item", item); // useful for re-evaluating visibility if favorite state changes
     
     if (payload && payload->type == SIDEBAR_ROW_WORD) {
-        g_signal_connect_data(star_btn, "clicked", G_CALLBACK(on_sidebar_favorite_clicked), g_strdup(title), (GClosureNotify)g_free, 0);
+        g_signal_connect_data(star_btn, "clicked", G_CALLBACK(on_sidebar_favorite_clicked), g_strdup(title), free_signal_data, 0);
         gboolean is_fav = word_list_contains_ci(favorite_words, title);
         gtk_button_set_icon_name(GTK_BUTTON(star_btn), is_fav ? "starred-symbolic" : "non-starred-symbolic");
 
@@ -2381,7 +2400,7 @@ static void related_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
     gtk_label_set_text(GTK_LABEL(label), valid_text);
     
     g_signal_handlers_disconnect_by_func(star_btn, on_sidebar_favorite_clicked, NULL);
-    g_signal_connect_data(star_btn, "clicked", G_CALLBACK(on_sidebar_favorite_clicked), g_strdup(valid_text), (GClosureNotify)g_free, 0);
+    g_signal_connect_data(star_btn, "clicked", G_CALLBACK(on_sidebar_favorite_clicked), g_strdup(valid_text), free_signal_data, 0);
     
     gboolean is_fav = word_list_contains_ci(favorite_words, valid_text);
     gtk_button_set_icon_name(GTK_BUTTON(star_btn), is_fav ? "starred-symbolic" : "non-starred-symbolic");
@@ -4012,18 +4031,6 @@ static gboolean on_search_btn_drop(GtkDropTarget *target, const GValue *value, g
 
 
 
-static void toggle_window_visibility(void) {
-    if (main_window) {
-        if (gtk_widget_get_visible(GTK_WIDGET(main_window))) {
-            gtk_widget_set_visible(GTK_WIDGET(main_window), FALSE);
-        } else {
-            gtk_window_present(main_window);
-        }
-    }
-}
-
-
-
 static char* scan_lookup_callback(const char *word) {
     if (!word || !*word) return NULL;
     
@@ -4034,33 +4041,40 @@ static char* scan_lookup_callback(const char *word) {
         return NULL;
     }
 
-    DictEntry *found_entry = NULL;
-    const FlatTreeEntry *found_res = NULL;
-    int found_dict_idx = 0;
-
+    GString *entries_html = g_string_new("");
+    char *query_key = g_utf8_casefold(clean, -1);
+    int found_count = 0;
     int idx = 0;
     for (DictEntry *e = all_dicts; e; e = e->next, idx++) {
-        if (!dict_entry_in_active_scope(e)) continue;
         if (!e->dict || !e->dict->index) continue;
         
         size_t pos = flat_index_search(e->dict->index, clean);
-        if (pos != (size_t)-1) {
-            found_entry = e;
-            found_res = flat_index_get(e->dict->index, pos);
-            found_dict_idx = idx;
-            break;
+        int dict_header_shown = 0;
+
+        while (pos != (size_t)-1) {
+            const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
+            if (!res) break;
+
+            char *raw_word = g_strndup(e->dict->data + res->h_off, res->h_len);
+            gboolean matches = headword_matches_normalized_query(raw_word, query_key);
+            g_free(raw_word);
+
+            if (!matches) {
+                break;
+            }
+
+            append_rendered_entry_html(entries_html, e, res, idx, &dict_header_shown, &found_count);
+
+            pos++;
+            if (pos >= flat_index_count(e->dict->index)) break;
         }
     }
 
+    g_free(query_key);
     g_free(lower_word);
 
-    if (found_entry && found_res) {
-        GString *html = g_string_new("");
-        int dict_header_shown = 0;
-        int found_count = 0;
-        append_rendered_entry_html(html, found_entry, found_res, found_dict_idx, &dict_header_shown, &found_count);
-        char *final_html = g_string_free(html, FALSE);
-        
+    if (found_count > 0) {
+        char *final_html = g_string_free(entries_html, FALSE);
         GString *doc = g_string_new("");
         g_string_append_printf(doc, "<html><head><meta charset='utf-8'><style>body { font-size: %dpx; background: transparent; color: inherit; }</style></head><body>", 
             (app_settings && app_settings->font_size > 0) ? app_settings->font_size : 16);
@@ -4070,6 +4084,7 @@ static char* scan_lookup_callback(const char *word) {
         return g_string_free(doc, FALSE);
     }
 
+    g_string_free(entries_html, TRUE);
     return NULL;
 }
 
@@ -4089,25 +4104,306 @@ static void dbus_global_shortcut_activated(GDBusConnection *connection,
                                            const gchar *signal_name,
                                            GVariant *parameters,
                                            gpointer user_data) {
-    (void)connection; (void)sender_name; (void)object_path; (void)interface_name; (void)signal_name; (void)parameters; (void)user_data;
-    toggle_window_visibility();
+    (void)connection; (void)sender_name; (void)object_path; (void)interface_name; (void)signal_name; (void)user_data;
+
+    const char *session_handle = NULL;
+    const char *shortcut_id = NULL;
+    guint64 timestamp = 0;
+    GVariant *options = NULL;
+    g_variant_get(parameters, "(&o&st@a{sv})", &session_handle, &shortcut_id, &timestamp, &options);
+    (void)timestamp;
+
+    if (g_strcmp0(session_handle, global_shortcut_session_handle) == 0 &&
+        g_strcmp0(shortcut_id, GLOBAL_SHORTCUT_ID) == 0) {
+        scan_popup_trigger_manual();
+    }
+
+    if (options) {
+        g_variant_unref(options);
+    }
+}
+
+static char *portal_sender_path_component(GDBusConnection *conn) {
+    const char *unique_name = g_dbus_connection_get_unique_name(conn);
+    if (!unique_name) {
+        return NULL;
+    }
+
+    char *component = g_strdup(unique_name[0] == ':' ? unique_name + 1 : unique_name);
+    g_strdelimit(component, ".", '_');
+    return component;
+}
+
+static char *portal_token(const char *prefix) {
+    return g_strdup_printf("diction_%s_%u", prefix, g_random_int());
+}
+
+static char *portal_request_path_for_token(GDBusConnection *conn, const char *token) {
+    char *sender = portal_sender_path_component(conn);
+    if (!sender) {
+        return NULL;
+    }
+
+    char *path = g_strdup_printf("/org/freedesktop/portal/desktop/request/%s/%s", sender, token);
+    g_free(sender);
+    return path;
+}
+
+static char *portal_session_path_for_token(GDBusConnection *conn, const char *token) {
+    char *sender = portal_sender_path_component(conn);
+    if (!sender) {
+        return NULL;
+    }
+
+    char *path = g_strdup_printf("/org/freedesktop/portal/desktop/session/%s/%s", sender, token);
+    g_free(sender);
+    return path;
+}
+
+static void global_shortcut_request_response(GDBusConnection *connection,
+                                             const gchar *sender_name,
+                                             const gchar *object_path,
+                                             const gchar *interface_name,
+                                             const gchar *signal_name,
+                                             GVariant *parameters,
+                                             gpointer user_data);
+
+static void global_shortcut_call_done(GObject *source_object, GAsyncResult *res, gpointer user_data) {
+    const char *method = user_data;
+    GError *err = NULL;
+    GVariant *reply = g_dbus_connection_call_finish(G_DBUS_CONNECTION(source_object), res, &err);
+    if (err) {
+        g_warning("Global shortcut portal %s call failed: %s", method ? method : "unknown", err->message);
+        g_error_free(err);
+        return;
+    }
+
+    if (reply) {
+        g_variant_unref(reply);
+    }
+}
+
+static void bind_global_shortcut(void) {
+    if (!global_shortcut_conn || !global_shortcut_session_handle) {
+        return;
+    }
+
+    char *request_token = portal_token("bind");
+    char *request_path = portal_request_path_for_token(global_shortcut_conn, request_token);
+    if (!request_path) {
+        g_free(request_token);
+        return;
+    }
+
+    if (global_shortcut_bind_response_sub_id != 0) {
+        g_dbus_connection_signal_unsubscribe(global_shortcut_conn, global_shortcut_bind_response_sub_id);
+        global_shortcut_bind_response_sub_id = 0;
+    }
+    global_shortcut_bind_response_sub_id =
+        g_dbus_connection_signal_subscribe(global_shortcut_conn,
+                                           "org.freedesktop.portal.Desktop",
+                                           "org.freedesktop.portal.Request",
+                                           "Response",
+                                           request_path,
+                                           NULL,
+                                           G_DBUS_SIGNAL_FLAGS_NONE,
+                                           global_shortcut_request_response,
+                                           GINT_TO_POINTER(PORTAL_REQUEST_BIND_SHORTCUTS),
+                                           NULL);
+
+    GVariantBuilder shortcut_props;
+    g_variant_builder_init(&shortcut_props, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&shortcut_props, "{sv}", "description",
+                          g_variant_new_string("Scan selected text with Diction"));
+    g_variant_builder_add(&shortcut_props, "{sv}", "preferred_trigger",
+                          g_variant_new_string(GLOBAL_SHORTCUT_TRIGGER));
+
+    GVariantBuilder shortcuts;
+    g_variant_builder_init(&shortcuts, G_VARIANT_TYPE("a(sa{sv})"));
+    g_variant_builder_add(&shortcuts, "(sa{sv})", GLOBAL_SHORTCUT_ID, &shortcut_props);
+
+    GVariantBuilder options;
+    g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&options, "{sv}", "handle_token", g_variant_new_string(request_token));
+
+    g_dbus_connection_call(global_shortcut_conn,
+                           "org.freedesktop.portal.Desktop",
+                           "/org/freedesktop/portal/desktop",
+                           "org.freedesktop.portal.GlobalShortcuts",
+                           "BindShortcuts",
+                           g_variant_new("(oa(sa{sv})sa{sv})",
+                                         global_shortcut_session_handle,
+                                         &shortcuts,
+                                         "",
+                                         &options),
+                           G_VARIANT_TYPE("(o)"),
+                           G_DBUS_CALL_FLAGS_NONE,
+                           -1,
+                           NULL,
+                           global_shortcut_call_done,
+                           "BindShortcuts");
+
+    g_free(request_path);
+    g_free(request_token);
+}
+
+static void global_shortcut_request_response(GDBusConnection *connection,
+                                             const gchar *sender_name,
+                                             const gchar *object_path,
+                                             const gchar *interface_name,
+                                             const gchar *signal_name,
+                                             GVariant *parameters,
+                                             gpointer user_data) {
+    (void)sender_name; (void)object_path; (void)interface_name; (void)signal_name;
+
+    PortalRequestKind kind = GPOINTER_TO_INT(user_data);
+    guint response = 2;
+    GVariant *results = NULL;
+    g_variant_get(parameters, "(u@a{sv})", &response, &results);
+
+    if (kind == PORTAL_REQUEST_CREATE_SHORTCUT_SESSION &&
+        global_shortcut_create_response_sub_id != 0) {
+        g_dbus_connection_signal_unsubscribe(connection, global_shortcut_create_response_sub_id);
+        global_shortcut_create_response_sub_id = 0;
+    } else if (kind == PORTAL_REQUEST_BIND_SHORTCUTS &&
+               global_shortcut_bind_response_sub_id != 0) {
+        g_dbus_connection_signal_unsubscribe(connection, global_shortcut_bind_response_sub_id);
+        global_shortcut_bind_response_sub_id = 0;
+    }
+
+    if (response != 0) {
+        g_warning("Global shortcut portal request failed or was cancelled (response %u)", response);
+        if (results) {
+            g_variant_unref(results);
+        }
+        return;
+    }
+
+    if (kind == PORTAL_REQUEST_CREATE_SHORTCUT_SESSION) {
+        const char *session_handle = NULL;
+        if (!results || !g_variant_lookup(results, "session_handle", "&s", &session_handle)) {
+            g_warning("Global shortcut portal did not return a session_handle");
+        } else {
+            g_free(global_shortcut_session_handle);
+            global_shortcut_session_handle = g_strdup(session_handle);
+
+            if (global_shortcut_signal_sub_id == 0) {
+                global_shortcut_signal_sub_id =
+                    g_dbus_connection_signal_subscribe(global_shortcut_conn,
+                                                       "org.freedesktop.portal.Desktop",
+                                                       "org.freedesktop.portal.GlobalShortcuts",
+                                                       "Activated",
+                                                       "/org/freedesktop/portal/desktop",
+                                                       global_shortcut_session_handle,
+                                                       G_DBUS_SIGNAL_FLAGS_NONE,
+                                                       dbus_global_shortcut_activated,
+                                                       NULL,
+                                                       NULL);
+            }
+
+            bind_global_shortcut();
+        }
+    }
+
+    if (results) {
+        g_variant_unref(results);
+    }
 }
 
 static void setup_global_shortcut(void) {
-    GDBusConnection *conn = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
-    if (!conn) return;
+    if (global_shortcut_conn) {
+        return;
+    }
 
-    g_dbus_connection_signal_subscribe(conn,
-                                       "org.freedesktop.portal.Desktop",
-                                       "org.freedesktop.portal.GlobalShortcuts",
-                                       "Activated",
-                                       "/org/freedesktop/portal/desktop",
-                                       NULL,
-                                       G_DBUS_SIGNAL_FLAGS_NONE,
-                                       dbus_global_shortcut_activated,
-                                       NULL,
-                                       NULL);
-    g_object_unref(conn);
+    global_shortcut_conn = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if (!global_shortcut_conn) {
+        return;
+    }
+
+    char *request_token = portal_token("create");
+    char *session_token = portal_token("session");
+    char *request_path = portal_request_path_for_token(global_shortcut_conn, request_token);
+    char *session_path = portal_session_path_for_token(global_shortcut_conn, session_token);
+    if (!request_path || !session_path) {
+        g_free(request_path);
+        g_free(session_path);
+        g_free(request_token);
+        g_free(session_token);
+        return;
+    }
+
+    global_shortcut_create_response_sub_id =
+        g_dbus_connection_signal_subscribe(global_shortcut_conn,
+                                           "org.freedesktop.portal.Desktop",
+                                           "org.freedesktop.portal.Request",
+                                           "Response",
+                                           request_path,
+                                           NULL,
+                                           G_DBUS_SIGNAL_FLAGS_NONE,
+                                           global_shortcut_request_response,
+                                           GINT_TO_POINTER(PORTAL_REQUEST_CREATE_SHORTCUT_SESSION),
+                                           NULL);
+
+    GVariantBuilder options;
+    g_variant_builder_init(&options, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(&options, "{sv}", "handle_token", g_variant_new_string(request_token));
+    g_variant_builder_add(&options, "{sv}", "session_handle_token", g_variant_new_string(session_token));
+
+    g_dbus_connection_call(global_shortcut_conn,
+                           "org.freedesktop.portal.Desktop",
+                           "/org/freedesktop/portal/desktop",
+                           "org.freedesktop.portal.GlobalShortcuts",
+                           "CreateSession",
+                           g_variant_new("(a{sv})", &options),
+                           G_VARIANT_TYPE("(o)"),
+                           G_DBUS_CALL_FLAGS_NONE,
+                           -1,
+                           NULL,
+                           global_shortcut_call_done,
+                           "CreateSession");
+
+    g_free(request_path);
+    g_free(session_path);
+    g_free(request_token);
+    g_free(session_token);
+}
+
+static void destroy_global_shortcut(void) {
+    if (!global_shortcut_conn) {
+        g_clear_pointer(&global_shortcut_session_handle, g_free);
+        return;
+    }
+
+    if (global_shortcut_create_response_sub_id != 0) {
+        g_dbus_connection_signal_unsubscribe(global_shortcut_conn, global_shortcut_create_response_sub_id);
+        global_shortcut_create_response_sub_id = 0;
+    }
+    if (global_shortcut_bind_response_sub_id != 0) {
+        g_dbus_connection_signal_unsubscribe(global_shortcut_conn, global_shortcut_bind_response_sub_id);
+        global_shortcut_bind_response_sub_id = 0;
+    }
+    if (global_shortcut_signal_sub_id != 0) {
+        g_dbus_connection_signal_unsubscribe(global_shortcut_conn, global_shortcut_signal_sub_id);
+        global_shortcut_signal_sub_id = 0;
+    }
+
+    if (global_shortcut_session_handle) {
+        g_dbus_connection_call(global_shortcut_conn,
+                               "org.freedesktop.portal.Desktop",
+                               global_shortcut_session_handle,
+                               "org.freedesktop.portal.Session",
+                               "Close",
+                               NULL,
+                               NULL,
+                               G_DBUS_CALL_FLAGS_NONE,
+                               -1,
+                               NULL,
+                               NULL,
+                               NULL);
+    }
+
+    g_clear_pointer(&global_shortcut_session_handle, g_free);
+    g_clear_object(&global_shortcut_conn);
 }
 
 static void on_activate(GtkApplication *app, gpointer user_data) {
@@ -4521,6 +4817,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     if (getenv("DICTION_DEBUG_AUTO_SCAN")) {
         show_settings_dialog(NULL, NULL, app);
     }
+
+    setup_global_shortcut();
 }
 
 
@@ -4602,9 +4900,6 @@ int main(int argc, char *argv[]) {
 
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);
 
-    setup_global_shortcut();
-
-
     char *empty[] = { argv[0], NULL };
     int status = g_application_run(G_APPLICATION(app), 1, empty);
 
@@ -4615,6 +4910,7 @@ int main(int argc, char *argv[]) {
     }
     scan_popup_destroy();
     tray_icon_destroy();
+    destroy_global_shortcut();
     if (search_execute_source_id != 0) {
         g_source_remove(search_execute_source_id);
     }

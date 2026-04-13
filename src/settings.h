@@ -32,9 +32,12 @@ typedef struct {
     char *color_theme;            // e.g. "default", "solarized", "dracula"
     char *render_style;           // e.g. "diction", "python", "goldendict-ng"
     gboolean scan_popup_enabled;  // Enable clipboard scanning
+    gboolean scan_selection_enabled; // Scan PRIMARY selection changes
+    gboolean scan_clipboard_enabled; // Scan regular clipboard copy changes
     gboolean tray_icon_enabled;   // Enable system tray icon
     gboolean close_to_tray;       // Close to tray instead of quitting
     int      scan_popup_delay_ms; // Debounce delay (default 500)
+    char    *scan_modifier_key;   // "none", "ctrl", "alt", "meta"
     char    *global_shortcut;     // Shortcut key string (e.g. "<Ctrl>F12")
 } AppSettings;
 

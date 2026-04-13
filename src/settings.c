@@ -691,9 +691,12 @@ AppSettings* settings_load(void) {
     settings->color_theme = g_strdup("default");
     settings->render_style = g_strdup("diction");
     settings->scan_popup_enabled = FALSE;
+    settings->scan_selection_enabled = TRUE;
+    settings->scan_clipboard_enabled = FALSE;
     settings->tray_icon_enabled = FALSE;
     settings->close_to_tray = FALSE;
     settings->scan_popup_delay_ms = 500;
+    settings->scan_modifier_key = g_strdup("none");
     settings->global_shortcut = g_strdup("");
 
     char *path = get_settings_file_path();
@@ -773,6 +776,10 @@ AppSettings* settings_load(void) {
     // Scan popup / tray icon settings
     if (json_object_has_member(obj, "scan_popup_enabled"))
         settings->scan_popup_enabled = json_object_get_boolean_member(obj, "scan_popup_enabled");
+    if (json_object_has_member(obj, "scan_selection_enabled"))
+        settings->scan_selection_enabled = json_object_get_boolean_member(obj, "scan_selection_enabled");
+    if (json_object_has_member(obj, "scan_clipboard_enabled"))
+        settings->scan_clipboard_enabled = json_object_get_boolean_member(obj, "scan_clipboard_enabled");
     if (json_object_has_member(obj, "tray_icon_enabled"))
         settings->tray_icon_enabled = json_object_get_boolean_member(obj, "tray_icon_enabled");
     if (json_object_has_member(obj, "close_to_tray"))
@@ -781,6 +788,17 @@ AppSettings* settings_load(void) {
         settings->scan_popup_delay_ms = (int)json_object_get_int_member(obj, "scan_popup_delay_ms");
         if (settings->scan_popup_delay_ms < 100) settings->scan_popup_delay_ms = 100;
         if (settings->scan_popup_delay_ms > 5000) settings->scan_popup_delay_ms = 5000;
+    }
+    const char *scan_modifier_key = json_object_has_member(obj, "scan_modifier_key")
+        ? json_object_get_string_member(obj, "scan_modifier_key")
+        : NULL;
+    if (scan_modifier_key && (
+            g_strcmp0(scan_modifier_key, "none") == 0 ||
+            g_strcmp0(scan_modifier_key, "ctrl") == 0 ||
+            g_strcmp0(scan_modifier_key, "alt") == 0 ||
+            g_strcmp0(scan_modifier_key, "meta") == 0)) {
+        g_free(settings->scan_modifier_key);
+        settings->scan_modifier_key = g_strdup(scan_modifier_key);
     }
     const char *global_shortcut = json_object_get_string_member(obj, "global_shortcut");
     if (global_shortcut) {
@@ -881,10 +899,14 @@ void settings_save(AppSettings *settings) {
 
     // Scan popup / tray icon settings
     json_object_set_boolean_member(root, "scan_popup_enabled", settings->scan_popup_enabled);
+    json_object_set_boolean_member(root, "scan_selection_enabled", settings->scan_selection_enabled);
+    json_object_set_boolean_member(root, "scan_clipboard_enabled", settings->scan_clipboard_enabled);
     json_object_set_boolean_member(root, "tray_icon_enabled", settings->tray_icon_enabled);
     json_object_set_boolean_member(root, "close_to_tray", settings->close_to_tray);
     json_object_set_int_member(root, "scan_popup_delay_ms",
         settings->scan_popup_delay_ms > 0 ? settings->scan_popup_delay_ms : 500);
+    json_object_set_string_member(root, "scan_modifier_key",
+        settings->scan_modifier_key ? settings->scan_modifier_key : "none");
     json_object_set_string_member(root, "global_shortcut",
         settings->global_shortcut ? settings->global_shortcut : "");
 
@@ -954,6 +976,7 @@ void settings_free(AppSettings *settings) {
         g_free(settings->font_family);
         g_free(settings->color_theme);
         g_free(settings->render_style);
+        g_free(settings->scan_modifier_key);
         g_free(settings->global_shortcut);
         g_free(settings);
     }
