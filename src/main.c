@@ -725,7 +725,7 @@ static char *normalize_headword_for_search(const char *value, gboolean unescape_
                 /* DSL mandatory special characters that MUST be unescaped:
                  * { } \ ~ @ # ( ) [ ] < >. Any other character (like / in \/) 
                  * is NOT unescaped to preserve leet speak patterns. */
-                const char *special = "{}~\\@#()[]<>";
+                const char *special = " {}~\\@#()[]<>";
                 if (strchr(special, p[1])) {
                     const char *next = p + 1;
                     const char *next_end = g_utf8_next_char(next);
