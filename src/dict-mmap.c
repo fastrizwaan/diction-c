@@ -121,9 +121,9 @@ typedef struct {
     size_t length;
 } HwSpan;
 
-static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries) {
-    const char *p   = dict->data;
-    const char *end = p + dict->size;
+static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries, size_t data_size, size_t data_start_offset) {
+    const char *p   = dict->data + data_start_offset;
+    const char *end = dict->data + data_size;
 
     /* Dynamic headword accumulator */
     HwSpan *hws     = NULL;
@@ -194,7 +194,7 @@ static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries) {
             continue;
 
         /* Skip UTF-8 BOM on the very first line */
-        if (line_start == dict->data && actual_len >= 3 &&
+        if (line_start == dict->data + data_start_offset && actual_len >= 3 &&
             (unsigned char)line_start[0] == 0xef &&
             (unsigned char)line_start[1] == 0xbb &&
             (unsigned char)line_start[2] == 0xbf) {
@@ -216,14 +216,68 @@ static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries) {
             if (line_start[0] == '{' && actual_len > 1 && line_start[1] == '{')
                 continue;
 
-            /* Grow the headword array if needed */
-            if (hw_count >= hw_cap) {
-                hw_cap = hw_cap == 0 ? 16 : hw_cap * 2;
-                hws = realloc(hws, hw_cap * sizeof(HwSpan));
+            /* Split headword by semicolon if it's not an HTML entity or escaped */
+            const char *lptr = line_start;
+            size_t sub_start = 0;
+            for (size_t i = 0; i <= actual_len; i++) {
+                if (i == actual_len || lptr[i] == ';') {
+                    /* Check for backslash escape: \; */
+                    if (lptr[i] == ';' && i > 0 && lptr[i-1] == '\\') {
+                        int bs_count = 0;
+                        for (int k = (int)i - 1; k >= 0 && lptr[k] == '\\'; k--) bs_count++;
+                        if (bs_count % 2 != 0) continue; /* Escaped semicolon, don't split here */
+                    }
+
+                    /* Entity protection: don't split if this looks like &...; */
+                    int is_entity = 0;
+                    if (i > 0 && lptr[i] == ';') {
+                        for (int j = (int)i - 1; j >= (int)sub_start && j >= (int)i - 10; j--) {
+                            if (lptr[j] == '&') {
+                                is_entity = 1;
+                                break;
+                            }
+                            if (!g_ascii_isalnum(lptr[j]) && lptr[j] != '#') break;
+                        }
+                    }
+                    if (is_entity && i < actual_len) continue;
+
+                    size_t sub_off = sub_start;
+                    size_t sub_len = i - sub_start;
+                    
+                    /* Trim whitespace for analysis */
+                    while (sub_len > 0 && g_ascii_isspace(lptr[sub_off])) { sub_off++; sub_len--; }
+                    while (sub_len > 0 && g_ascii_isspace(lptr[sub_off + sub_len - 1])) { sub_len--; }
+
+                    if (sub_len > 0) {
+                        /* Emoticon protection: If this sub-headword contains NO alphanumeric characters
+                         * and it's NOT the first headword, reattach it to the previous one instead
+                         * of creating a new entry. This preserves things like "Love Pat ;)" */
+                        int has_alnum = 0;
+                        for (size_t k = 0; k < sub_len; k++) {
+                            if (g_ascii_isalnum(lptr[sub_off + k]) || (unsigned char)lptr[sub_off + k] >= 0x80) {
+                                has_alnum = 1;
+                                break;
+                            }
+                        }
+
+                        if (hw_count > 0 && !has_alnum) {
+                            /* Reattach to previous headword by extending its length.
+                             * The new length covers everything from previous offset to end of current sub. */
+                            hws[hw_count - 1].length = (size_t)(lptr + sub_off + sub_len - (dict->data + hws[hw_count - 1].offset));
+                        } else {
+                            /* Grow the headword array if needed */
+                            if (hw_count >= hw_cap) {
+                                hw_cap = hw_cap == 0 ? 16 : hw_cap * 2;
+                                hws = realloc(hws, hw_cap * sizeof(HwSpan));
+                            }
+                            hws[hw_count].offset = (size_t)(lptr + sub_off - dict->data);
+                            hws[hw_count].length = sub_len;
+                            hw_count++;
+                        }
+                    }
+                    sub_start = i + 1;
+                }
             }
-            hws[hw_count].offset = (size_t)(line_start - dict->data);
-            hws[hw_count].length = actual_len;
-            hw_count++;
 
             /* Tentatively set def_offset to right after this line */
             def_offset = (size_t)(p - dict->data);
@@ -416,7 +470,9 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         if (need_index) {
             printf("[DSL] Cache exists but lacks index. Performing auto-upgrade...\n");
             TreeEntry *entries = NULL;
-            size_t word_count = parse_dsl_into_entries(dict, &entries);
+            size_t data_size = dict->size;
+            if (count > 0) data_size = dict->size - index_size;
+            size_t word_count = parse_dsl_into_entries(dict, &entries, data_size, 8);
 
             /* Check for cancellation before attempting to upgrade cache */
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
@@ -433,6 +489,9 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                 // Re-open O_RDWR to upgrade cache
                 int fd_rw = open(cache_path, O_RDWR);
                 if (fd_rw >= 0) {
+                    // Truncate to remove any old/stale index before appending new one
+                    ftruncate(fd_rw, (off_t)data_size);
+
                     lseek(fd_rw, 0, SEEK_END);
                     write(fd_rw, entries, word_count * sizeof(TreeEntry));
                     lseek(fd_rw, 0, SEEK_SET);
@@ -440,8 +499,10 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                     write(fd_rw, &final_cnt, 8);
                     close(fd_rw);
 
-                    // Re-mmap the newly appended file
+                    // Re-mmap the newly written file
                     munmap((void*)dict->data, dict->size);
+                    close(dict->fd);
+                    dict->fd = open(cache_path, O_RDONLY);
                     struct stat st_new;
                     fstat(dict->fd, &st_new);
                     dict->size = st_new.st_size;
@@ -575,15 +636,6 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         fflush(cache_file);
         fclose(cache_file);
 
-        // Update cache file mtime to match source
-        struct stat src_st;
-        if (stat(path, &src_st) == 0) {
-            struct utimbuf times;
-            times.actime = src_st.st_mtime;
-            times.modtime = src_st.st_mtime;
-            utime(cache_path, &times);
-        }
-
         // Now open the cached file
         dict->fd = open(cache_path, O_RDWR);
         if (dict->fd < 0) {
@@ -612,19 +664,30 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         dict->data = (const char*)map;
 
         TreeEntry *entries = NULL;
-        size_t count = parse_dsl_into_entries(dict, &entries);
+        size_t word_count = parse_dsl_into_entries(dict, &entries, dict->size, 8);
 
-        if (count > 0 && entries) {
+        if (word_count > 0 && entries) {
             // Append entries to cache file
             lseek(dict->fd, 0, SEEK_END);
-            write(dict->fd, entries, count * sizeof(TreeEntry));
+            write(dict->fd, entries, word_count * sizeof(TreeEntry));
 
             // Update count at beginning
             lseek(dict->fd, 0, SEEK_SET);
-            uint64_t final_count = (uint64_t)count;
+            uint64_t final_count = (uint64_t)word_count;
             write(dict->fd, &final_count, 8);
 
             free(entries);
+        }
+
+        // Sync cache mtime to match source (after all writes including index)
+        {
+            struct stat src_st;
+            if (stat(path, &src_st) == 0) {
+                struct utimbuf times;
+                times.actime = src_st.st_mtime;
+                times.modtime = src_st.st_mtime;
+                utime(cache_path, &times);
+            }
         }
 
         // Remap as read-only for final use

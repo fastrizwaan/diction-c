@@ -693,7 +693,7 @@ static gboolean text_has_replacement_char(const char *text) {
     return text && strstr(text, "\xEF\xBF\xBD") != NULL;
 }
 
-static char *normalize_headword_for_search(const char *value) {
+static char *normalize_headword_for_search(const char *value, gboolean unescape_dsl) {
     if (!value) {
         return NULL;
     }
@@ -704,33 +704,49 @@ static char *normalize_headword_for_search(const char *value) {
 
     while (*p) {
         if (g_str_has_prefix(p, "{*}")) {
-            p += strlen("{*}");
+            p += 3;
             continue;
         }
 
         if (g_str_has_prefix(p, "{·}")) {
-            p += strlen("{·}");
+            p += 3;
             continue;
         }
         
+        /* Preserve bare braces unless they are part of a backslash escape */
         if (*p == '{' || *p == '}') {
+            g_string_append_c(out, *p);
             p++;
             continue;
         }
 
-        if (*p == '\\' && (p[1] == '{' || p[1] == '}' || p[1] == '~')) {
-            p++; /* skip the backslash */
-            const char *next = g_utf8_next_char(p);
-            g_string_append_len(out, p, next - p);
-            p = next;
+        if (*p == '\\' && p[1] != '\0') {
+            if (unescape_dsl) {
+                /* DSL mandatory special characters that MUST be unescaped:
+                 * { } \ ~ @ # ( ) [ ] < >. Any other character (like / in \/) 
+                 * is NOT unescaped to preserve leet speak patterns. */
+                const char *special = "{}~\\@#()[]<>";
+                if (strchr(special, p[1])) {
+                    const char *next = p + 1;
+                    const char *next_end = g_utf8_next_char(next);
+                    g_string_append_len(out, next, next_end - next);
+                    p = next_end;
+                } else {
+                    /* Not special, keep the backslash */
+                    g_string_append_c(out, '\\');
+                    p++;
+                }
+            } else {
+                /* Literal mode: keep everything as-is (e.g. from user search box) */
+                g_string_append_c(out, '\\');
+                p++;
+            }
             continue;
         }
 
-        if (*p == '\\' && p[1] != '\0') {
-            const char *next = p + 1;
-            const char *next_end = g_utf8_next_char(next);
-            g_string_append_len(out, next, next_end - next);
-            p = next_end;
+        if (g_ascii_isspace(*p)) {
+            g_string_append_c(out, ' ');
+            while (g_ascii_isspace(*p)) p++;
             continue;
         }
 
@@ -740,10 +756,16 @@ static char *normalize_headword_for_search(const char *value) {
     }
 
     char *normalized = g_string_free(out, FALSE);
-    char *clean = sanitize_user_word(normalized);
-    g_free(normalized);
     g_free(valid);
-    return clean;
+
+    char *trimmed = g_strstrip(normalized);
+    if (!trimmed || *trimmed == '\0') {
+        g_free(normalized);
+        return NULL;
+    }
+    char *final = g_strdup(trimmed);
+    g_free(normalized);
+    return final;
 }
 
 typedef enum {
@@ -1457,7 +1479,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
         }
 
         char *word = g_strndup(state->current_dict->dict->data + node->h_off, node->h_len);
-        char *clean_word = normalize_headword_for_search(word);
+        char *clean_word = normalize_headword_for_search(word, TRUE);
         if (!clean_word || text_has_replacement_char(clean_word)) {
             g_free(word);
             g_free(clean_word);
@@ -1560,7 +1582,7 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
             if (!node) break;
 
             char *raw_word = g_strndup(entry->dict->data + node->h_off, node->h_len);
-            char *clean_word = normalize_headword_for_search(raw_word);
+            char *clean_word = normalize_headword_for_search(raw_word, TRUE);
             g_free(raw_word);
 
             if (!clean_word || text_has_replacement_char(clean_word)) {
@@ -1616,7 +1638,7 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
 static void populate_search_sidebar(const char *query) {
     cancel_sidebar_search();
 
-    char *clean = normalize_headword_for_search(query);
+    char *clean = normalize_headword_for_search(query, FALSE);
     // If clean is NULL, it means the query is empty or whitespace-only.
     // We allow this to show all headwords.
 
@@ -2090,8 +2112,9 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
         if (g_str_has_prefix(uri, "dict://")) {
             const char *word = uri + 7;
             char *unescaped = g_uri_unescape_string(word, NULL);
-            // fprintf(stderr, "[DICT LINK] Searching for: %s\n", unescaped ? unescaped : word);
-            gtk_editable_set_text(GTK_EDITABLE(user_data), unescaped ? unescaped : word);
+            char *clean_link = normalize_headword_for_search(unescaped ? unescaped : word, TRUE);
+            gtk_editable_set_text(GTK_EDITABLE(user_data), clean_link ? clean_link : (unescaped ? unescaped : word));
+            g_free(clean_link);
             g_free(unescaped);
             webkit_policy_decision_ignore(d);
             return;
@@ -2496,7 +2519,7 @@ static void schedule_execute_search(void) {
 
 static gboolean headword_matches_normalized_query(const char *raw_word, const char *query_key) {
     gboolean matches = FALSE;
-    char *normalized = normalize_headword_for_search(raw_word);
+    char *normalized = normalize_headword_for_search(raw_word, TRUE);
     if (normalized) {
         char *normalized_key = g_utf8_casefold(normalized, -1);
         matches = g_strcmp0(normalized_key, query_key) == 0;
@@ -2557,7 +2580,7 @@ static void append_rendered_entry_html(GString *html_res,
 
     char *escaped_name = safe_markup_escape_n(entry->name ? entry->name : "", -1);
     char *tmp_hw = g_strndup(entry->dict->data + res->h_off, res->h_len);
-    char *clean_hw = normalize_headword_for_search(tmp_hw);
+    char *clean_hw = normalize_headword_for_search(tmp_hw, TRUE);
     char *escaped_headword = safe_markup_escape_n(clean_hw ? clean_hw : tmp_hw, -1);
     g_free(tmp_hw);
     if (clean_hw) g_free(clean_hw);
@@ -2716,7 +2739,7 @@ static void execute_search_now(void) {
     }
 
     const char *query_raw = gtk_editable_get_text(GTK_EDITABLE(search_entry));
-    char *query = normalize_headword_for_search(query_raw);
+    char *query = normalize_headword_for_search(query_raw, FALSE);
 
     if (query && *query) {
         fprintf(stderr, "[Query]: '%s'\n", query);
@@ -2757,15 +2780,17 @@ static void execute_search_now(void) {
         while (pos != (size_t)-1) {
             const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
             if (!res) break;
+
+            /* Verify we are still within the agnostic-match group */
+            if (compare_headword(e->dict->data, res, query, strlen(query)) != 0) break;
+
             char *raw_word = g_strndup(e->dict->data + res->h_off, res->h_len);
             gboolean matches = headword_matches_normalized_query(raw_word, query_key);
             g_free(raw_word);
 
-            if (!matches) {
-                break;
+            if (matches) {
+                append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             }
-            
-            append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             
             pos++;
             if (pos >= flat_index_count(e->dict->index)) break;
@@ -2826,7 +2851,7 @@ static void execute_search_now(void) {
 }
 
 static void append_rendered_word_html(const char *raw_word) {
-    char *query = normalize_headword_for_search(raw_word);
+    char *query = normalize_headword_for_search(raw_word, TRUE);
     if (!query || strlen(query) == 0) {
         g_free(query);
         return;
@@ -2847,16 +2872,18 @@ static void append_rendered_word_html(const char *raw_word) {
             const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
             if (!res) break;
 
+            /* Verify we are still within the agnostic-match group */
+            if (compare_headword(e->dict->data, res, query, strlen(query)) != 0) break;
+
             char *tmp_hw = g_strndup(e->dict->data + res->h_off, res->h_len);
-            char *clean_hw = normalize_headword_for_search(tmp_hw);
+            char *clean_hw = normalize_headword_for_search(tmp_hw, TRUE);
             gboolean matches = (clean_hw && g_ascii_strcasecmp(clean_hw, query) == 0);
             g_free(tmp_hw);
             if (clean_hw) g_free(clean_hw);
 
-            if (!matches) {
-                break;
+            if (matches) {
+                append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             }
-            append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             pos++;
             if (pos >= flat_index_count(e->dict->index)) break;
         }
@@ -2961,7 +2988,7 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
             const char *word = e->dict->data + node->h_off;
             size_t len = node->h_len;
             tmp_hw = g_strndup(word, len);
-            clean_hw = normalize_headword_for_search(tmp_hw);
+            clean_hw = normalize_headword_for_search(tmp_hw, TRUE);
             
             if (clean_hw && *clean_hw && !text_has_replacement_char(clean_hw)) {
                 break;
@@ -4866,6 +4893,22 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
 
 
+/* Cancel in-flight idle/timeout sources before GTK finalization destroys widgets.
+ * The GApplication::shutdown signal fires while the main loop is still active,
+ * so removing sources here prevents callbacks from hitting freed objects. */
+static void on_app_shutdown(GApplication *app, gpointer user_data) {
+    (void)app; (void)user_data;
+    cancel_sidebar_search();
+    if (search_execute_source_id != 0) {
+        g_source_remove(search_execute_source_id);
+        search_execute_source_id = 0;
+    }
+    /* Null out global widget pointers so any stray callback that somehow
+     * still runs will see NULL and bail out early. */
+    related_string_list = NULL;
+    related_row_payloads = NULL;
+}
+
 int main(int argc, char *argv[]) {
     // Disable compositing to fix rendering issues
     setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", 1);
@@ -4942,6 +4985,7 @@ int main(int argc, char *argv[]) {
     g_object_unref(scan_action);
 
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);
+    g_signal_connect(app, "shutdown", G_CALLBACK(on_app_shutdown), NULL);
 
     char *empty[] = { argv[0], NULL };
     int status = g_application_run(G_APPLICATION(app), 1, empty);

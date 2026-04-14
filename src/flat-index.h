@@ -61,3 +61,8 @@ bool flat_index_validate(const FlatIndex *idx);
  * Used during cache building. */
 void flat_index_sort_entries(FlatTreeEntry *entries, size_t count,
                              const char *data, size_t data_size);
+
+/* Compare an entry's headword against a query using agnostic rules.
+ * Exposed for iterating group matches in main.c. */
+int compare_headword(const char *data, const FlatTreeEntry *entry,
+                     const char *query, size_t qlen);

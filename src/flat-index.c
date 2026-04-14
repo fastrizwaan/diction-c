@@ -10,9 +10,7 @@
 
 static bool is_dsl_ignored(char c) {
     return g_ascii_isspace(c) || 
-           c == '{' || c == '}' || c == '\\' || c == '~' || 
-           c == '/' || c == ',' || c == '.' || c == '-' || 
-           c == '(' || c == ')' || c == '[' || c == ']' || c == '_';
+           c == '{' || c == '}' || c == '\\' || c == '~';
 }
 
 static int compare_dsl_agnostic(const char *raw, size_t raw_len, const char *clean, size_t clean_len) {
@@ -45,8 +43,8 @@ static int compare_dsl_agnostic(const char *raw, size_t raw_len, const char *cle
     return 1;
 }
 
-static int compare_headword(const char *data, const FlatTreeEntry *entry,
-                            const char *query, size_t qlen) {
+int compare_headword(const char *data, const FlatTreeEntry *entry,
+                     const char *query, size_t qlen) {
     return compare_dsl_agnostic(data + entry->h_off, entry->h_len, query, qlen);
 }
 
@@ -118,7 +116,15 @@ static int sort_compare(const void *a, const void *b) {
     while (i < la && is_dsl_ignored(ra[i])) i++;
     while (j < lb && is_dsl_ignored(rb[j])) j++;
 
-    if (i == la && j == lb) return 0;
+    if (i == la && j == lb) {
+        /* Tie-breaker: Case-sensitive exact comparison of the RAW bytes */
+        size_t min_len = (la < lb) ? la : lb;
+        int diff = strncmp(ra, rb, min_len);
+        if (diff != 0) return diff;
+        if (la < lb) return -1;
+        if (la > lb) return 1;
+        return 0;
+    }
     if (i == la) return -1;
     return 1;
 }
