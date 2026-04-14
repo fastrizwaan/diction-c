@@ -322,13 +322,26 @@ static void register_sni_with_watcher(void) {
 
     GVariant *args = g_variant_new("(s)", owned_bus_name);
     
-    // Attempt KDE watcher first
+    // Attempt KDE watcher
     g_dbus_connection_call(dbus_conn,
         "org.kde.StatusNotifierWatcher",
         "/StatusNotifierWatcher",
         "org.kde.StatusNotifierWatcher",
         "RegisterStatusNotifierItem",
         args,
+        NULL,
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        NULL,
+        register_sni_cb, NULL);
+
+    // Also attempt Freedesktop watcher for compatibility
+    g_dbus_connection_call(dbus_conn,
+        "org.freedesktop.StatusNotifierWatcher",
+        "/StatusNotifierWatcher",
+        "org.freedesktop.StatusNotifierWatcher",
+        "RegisterStatusNotifierItem",
+        g_variant_new("(s)", owned_bus_name),
         NULL,
         G_DBUS_CALL_FLAGS_NONE,
         -1,
@@ -400,7 +413,7 @@ void tray_icon_init(GtkApplication *app, GtkWindow *main_window,
     quit_app_cb = quit_cb;
 
     g_free(owned_bus_name);
-    owned_bus_name = g_strdup_printf("org.kde.StatusNotifierItem-%d-1", getpid());
+    owned_bus_name = g_strdup_printf("io.github.fastrizwaan.diction.StatusNotifierItem-%d-1", getpid());
 
     bus_owner_id = g_bus_own_name(G_BUS_TYPE_SESSION,
                                   owned_bus_name,

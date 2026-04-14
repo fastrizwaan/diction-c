@@ -12,7 +12,9 @@ finish-args:
   - --share=network
   - --filesystem=host
   - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
   - --own-name=io.github.fastrizwaan.diction
+  - --own-name=io.github.fastrizwaan.diction.*
 modules:
   - name: diction
     buildsystem: meson
