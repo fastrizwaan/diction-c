@@ -400,29 +400,29 @@ static void on_bus_acquired(GDBusConnection *connection, const gchar *name, gpoi
     register_sni_with_watcher();
 }
 
-static guint bus_owner_id = 0;
+
 
 void tray_icon_init(GtkApplication *app, GtkWindow *main_window,
                     void (*toggle_scan_cb)(void),
                     void (*quit_cb)(void)) {
-    if (bus_owner_id != 0) return; // already init
+    if (dbus_conn != NULL) return; // already init
 
     app_ref = app;
     main_win_ref = main_window;
     scan_toggle_cb = toggle_scan_cb;
     quit_app_cb = quit_cb;
 
-    g_free(owned_bus_name);
-    owned_bus_name = g_strdup_printf("io.github.fastrizwaan.diction.StatusNotifierItem-%d-1", getpid());
+    GDBusConnection *conn = g_application_get_dbus_connection(G_APPLICATION(app));
+    if (!conn) {
+        /* No DBus connection available (e.g. not running in a session or single-instance disabled) */
+        return;
+    }
 
-    bus_owner_id = g_bus_own_name(G_BUS_TYPE_SESSION,
-                                  owned_bus_name,
-                                  G_BUS_NAME_OWNER_FLAGS_NONE,
-                                  on_bus_acquired,
-                                  NULL,
-                                  NULL,
-                                  NULL,
-                                  NULL);
+    g_free(owned_bus_name);
+    const char *app_id = g_application_get_application_id(G_APPLICATION(app));
+    owned_bus_name = g_strdup(app_id ? app_id : "io.github.fastrizwaan.diction");
+
+    on_bus_acquired(conn, owned_bus_name, NULL);
 }
 
 void tray_icon_destroy(void) {
@@ -439,10 +439,6 @@ void tray_icon_destroy(void) {
             g_dbus_connection_unregister_object(dbus_conn, sni_id);
             sni_id = 0;
         }
-    }
-    if (bus_owner_id != 0) {
-        g_bus_unown_name(bus_owner_id);
-        bus_owner_id = 0;
     }
     if (dbus_conn) {
         g_object_unref(dbus_conn);
