@@ -2283,10 +2283,27 @@ char* dsl_render_to_html(const char *dsl_text,
 
         if (dsl_text[i] == '[') {
              size_t end = i + 1;
-             while (end < length && dsl_text[end] != ']') end++;
-             if (end < length) {
-                 size_t tag_len = end - i - 1;
-                 const char *tag = dsl_text + i + 1;
+             while (end < length && dsl_text[end] != ']' && dsl_text[end] != '\n') end++;
+             
+             size_t tag_len;
+             const char *tag;
+             gboolean tag_found = FALSE;
+
+             if (end < length && dsl_text[end] == ']') {
+                 tag_len = end - i - 1;
+                 tag = dsl_text + i + 1;
+                 tag_found = TRUE;
+             } else if (i + 2 < length && dsl_text[i+1] == '/' && dsl_text[i+2] == 'm') {
+                 /* Handle unclosed [/m tags (missing closing bracket) */
+                 size_t temp = i + 3;
+                 while (temp < length && isdigit((unsigned char)dsl_text[temp])) temp++;
+                 tag_len = temp - i - 1;
+                 tag = dsl_text + i + 1;
+                 end = temp - 1; 
+                 tag_found = TRUE;
+             }
+
+             if (tag_found) {
                  
                  // Handle color tags like [c darkblue]
                  if (tag_len > 2 && tag[0] == 'c' && tag[1] == ' ') {
@@ -2331,8 +2348,15 @@ char* dsl_render_to_html(const char *dsl_text,
                          m_open = 1;
                      }
                  }
-                 else if (tag_len == 2 && strncmp(tag, "/m", 2) == 0) {
-                     if (!in_media && m_open) {
+                 else if (tag_len >= 2 && tag[0] == '/' && tag[1] == 'm') {
+                     gboolean all_digits = TRUE;
+                     for (size_t j = 2; j < tag_len; j++) {
+                         if (!isdigit((unsigned char)tag[j])) {
+                             all_digits = FALSE;
+                             break;
+                         }
+                     }
+                     if (all_digits && !in_media && m_open) {
                          buf_append_str(&b, "</div>");
                          m_open = 0;
                      }
