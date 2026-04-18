@@ -1808,16 +1808,27 @@ static gboolean path_is_inside_directory(const char *path, const char *dir) {
         return FALSE;
     }
 
-    gsize dir_len = strlen(dir);
-    if (!g_str_has_prefix(path, dir)) {
+    char *expanded_dir = NULL;
+    if (dir[0] == '~') {
+        expanded_dir = g_build_filename(g_get_home_dir(), dir + 1, NULL);
+    } else {
+        expanded_dir = g_strdup(dir);
+    }
+
+    gsize dir_len = strlen(expanded_dir);
+    if (!g_str_has_prefix(path, expanded_dir)) {
+        g_free(expanded_dir);
         return FALSE;
     }
 
     if (path[dir_len] == '\0') {
+        g_free(expanded_dir);
         return TRUE;
     }
 
-    return dir[dir_len - 1] == G_DIR_SEPARATOR || path[dir_len] == G_DIR_SEPARATOR;
+    gboolean result = expanded_dir[dir_len - 1] == G_DIR_SEPARATOR || path[dir_len] == G_DIR_SEPARATOR;
+    g_free(expanded_dir);
+    return result;
 }
 
 static DictEntry *dict_entry_new_shell(const char *name, const char *path) {
@@ -1853,6 +1864,7 @@ static guint rebuild_dict_entries_from_settings(void) {
     guint count = 0;
     char *active_path = active_entry && active_entry->path ? g_strdup(active_entry->path) : NULL;
 
+    GPtrArray *old_entries = g_ptr_array_new();
     GHashTable *existing_by_path = g_hash_table_new(g_str_hash, g_str_equal);
     GHashTable *reused_entries = g_hash_table_new(g_direct_hash, g_direct_equal);
 
@@ -1860,6 +1872,7 @@ static guint rebuild_dict_entries_from_settings(void) {
         if (entry->path && !g_hash_table_contains(existing_by_path, entry->path)) {
             g_hash_table_insert(existing_by_path, entry->path, entry);
         }
+        g_ptr_array_add(old_entries, entry);
     }
 
     if (app_settings) {
@@ -1899,14 +1912,15 @@ static guint rebuild_dict_entries_from_settings(void) {
         }
     }
 
-    for (DictEntry *entry = old_head; entry; ) {
-        DictEntry *next = entry->next;
+    for (guint i = 0; i < old_entries->len; i++) {
+        DictEntry *entry = g_ptr_array_index(old_entries, i);
         if (!g_hash_table_contains(reused_entries, entry)) {
             entry->next = NULL;
             dict_loader_free(entry);
         }
-        entry = next;
     }
+
+    g_ptr_array_free(old_entries, TRUE);
 
     g_hash_table_unref(existing_by_path);
     g_hash_table_unref(reused_entries);
@@ -3511,13 +3525,7 @@ static void reload_dictionaries_from_settings(void *user_data) {
     }
     cancel_sidebar_search();
 
-    // Free existing dicts
-    dict_loader_free(all_dicts);
-    all_dicts = NULL;
-    active_entry = NULL;
-
-    // Clear sidebar
-    clear_sidebar_list(&dict_sidebar);
+    // Clear sidebar and transient state
     clear_related_rows();
     clear_sidebar_list(&groups_sidebar);
     dictionary_loading_in_progress = FALSE;
@@ -3825,12 +3833,23 @@ static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
                                                          GPtrArray *out_paths,
                                                          GHashTable *seen_paths,
                                                          GHashTable *seen_dsl_families,
-                                                         GHashTable *ignored_paths) {
-    if (!dirpath || !out_paths) {
+                                                         GHashTable *ignored_paths,
+                                                         int depth) {
+    if (!dirpath || !out_paths || depth > 5) {
         return;
     }
 
-    GDir *dir = g_dir_open(dirpath, 0, NULL);
+    if (g_atomic_int_get(&loader_generation) == 0) return; // Quick check
+
+    char *expanded = NULL;
+    if (dirpath[0] == '~') {
+        expanded = g_build_filename(g_get_home_dir(), dirpath + 1, NULL);
+    } else {
+        expanded = g_strdup(dirpath);
+    }
+
+    GDir *dir = g_dir_open(expanded, 0, NULL);
+    g_free(expanded);
     if (!dir) {
         return;
     }
@@ -3845,10 +3864,15 @@ static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
         if (g_file_test(full, G_FILE_TEST_IS_DIR)) {
             if (!loader_path_ends_with_ci(full, ".files") &&
                 !loader_path_ends_with_ci(full, ".dsl.files") &&
-                !loader_path_ends_with_ci(full, ".dsl.dz.files")) {
+                !loader_path_ends_with_ci(full, ".dsl.dz.files") &&
+                g_ascii_strcasecmp(name, "node_modules") != 0 &&
+                g_ascii_strcasecmp(name, "build") != 0 &&
+                g_ascii_strcasecmp(name, "dist") != 0 &&
+                g_ascii_strcasecmp(name, "vendor") != 0 &&
+                g_ascii_strcasecmp(name, "__pycache__") != 0) {
                 collect_dictionary_candidate_paths_recursive(full, out_paths,
                                                             seen_paths, seen_dsl_families,
-                                                            ignored_paths);
+                                                            ignored_paths, depth + 1);
             }
             g_free(full);
             continue;
@@ -3944,11 +3968,7 @@ static char* sample_dict_and_detect_lang(DictEntry *entry) {
     if (g_strcmp0(def_lang, "Unknown") == 0) def_lang = hw_lang;
     if (g_strcmp0(hw_lang, "Unknown") == 0) hw_lang = def_lang;
 
-    if (g_strcmp0(hw_lang, def_lang) == 0) {
-        return g_strdup_printf("%s", hw_lang);
-    } else {
-        return g_strdup_printf("%s->%s", hw_lang, def_lang);
-    }
+    return g_strdup_printf("%s->%s", hw_lang, def_lang);
 }
 
 static gboolean on_dict_loaded_idle(gpointer user_data) {
@@ -3990,18 +4010,22 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
             }
         }
 
-        if (!existing && e->dict) {
+        if (e->dict) {
             char *guessed = NULL;
             if (e->dict->source_lang && e->dict->target_lang) {
                 guessed = g_strdup_printf("%s->%s", e->dict->source_lang, e->dict->target_lang);
             } else if (e->dict->source_lang) {
-                guessed = g_strdup(e->dict->source_lang);
+                guessed = g_strdup_printf("%s->%s", e->dict->source_lang, e->dict->source_lang);
             } else {
                 guessed = sample_dict_and_detect_lang(e);
             }
 
             if (guessed && *guessed) {
                 e->guessed_lang_group = g_strdup(guessed);
+                if (existing) {
+                    g_free(existing->guessed_lang_group);
+                    existing->guessed_lang_group = g_strdup(guessed);
+                }
                 if (app_settings) {
                     char *dict_id = settings_make_dictionary_id(e->path);
                     if (settings_upsert_guessed_group(app_settings, guessed, dict_id)) {
@@ -4116,7 +4140,7 @@ static gpointer dict_load_thread(gpointer user_data) {
         if (args->generation != g_atomic_int_get(&loader_generation)) break;
         collect_dictionary_candidate_paths_recursive(args->dirs[i], candidate_paths,
                                                     seen_paths, seen_dsl_families,
-                                                    args->ignored_paths);
+                                                    args->ignored_paths, 0);
     }
 
     /* Inform settings scan dialog of discovered candidates */

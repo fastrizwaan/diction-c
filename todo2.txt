@@ -5,3 +5,6 @@ create language pair based groups. say English->English, English->Hindi, Hindi->
 1. DSL implmented
 2. MDX/BGL/ifo/Slob etc. needs fixing
 
+diction:
+1. update/keep the language pair dictionary in the groups tab, always. even for single file added.
+
