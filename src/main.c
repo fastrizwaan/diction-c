@@ -17,17 +17,23 @@ static DictEntry *all_dicts = NULL;
 static DictEntry *active_entry = NULL;
 static AdwTabView *tab_view = NULL;
 
+static WebKitWebView *get_web_view_from_scroll(GtkWidget *scroll) {
+    if (!scroll || !GTK_IS_SCROLLED_WINDOW(scroll)) return NULL;
+    WebKitWebView *stored = g_object_get_data(G_OBJECT(scroll), "web-view");
+    if (stored) return stored;
+    GtkWidget *child = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
+    if (GTK_IS_VIEWPORT(child)) {
+        child = gtk_viewport_get_child(GTK_VIEWPORT(child));
+    }
+    return WEBKIT_IS_WEB_VIEW(child) ? WEBKIT_WEB_VIEW(child) : NULL;
+}
+
 static WebKitWebView *get_current_web_view(void) {
     if (!tab_view) return NULL;
     AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
     if (!page) return NULL;
     GtkWidget *scroll = adw_tab_page_get_child(page);
-    if (!scroll || !GTK_IS_SCROLLED_WINDOW(scroll)) return NULL;
-    GtkWidget *child = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
-    if (GTK_IS_VIEWPORT(child)) {
-        child = gtk_viewport_get_child(GTK_VIEWPORT(child));
-    }
-    return WEBKIT_WEB_VIEW(child);
+    return get_web_view_from_scroll(scroll);
 }
 #define web_view get_current_web_view()
 
@@ -381,6 +387,38 @@ static char *safe_markup_escape_n(const char *buf, gssize len) {
     return escaped;
 }
 
+static void render_idle_page_to_webview(WebKitWebView *target_wv,
+                                        const char *title,
+                                        const char *message_html) {
+    if (!target_wv) return;
+
+    int dark_mode = style_manager && adw_style_manager_get_dark(style_manager) ? 1 : 0;
+    dsl_theme_palette palette;
+    dict_render_get_theme_palette(
+        (app_settings && app_settings->color_theme) ? app_settings->color_theme : "default",
+        dark_mode,
+        &palette);
+
+    char *escaped_title = safe_markup_escape_n(title ? title : "Diction", -1);
+    char *html = g_strdup_printf(
+        "<html><body style='font-family: sans-serif; background: %s; color: %s; margin: 0;'>"
+        "<div style='min-height: 100vh; box-sizing: border-box; display: flex; align-items: center; justify-content: center; padding: 24px;'>"
+        "<div style='max-width: 40rem; width: 100%%; text-align: center; padding: 24px 28px; border: 1px solid %s; border-radius: 16px; background: %s;'>"
+        "<h2 style='margin: 0 0 12px 0; color: %s;'>%s</h2>"
+        "<div style='opacity: 0.78; line-height: 1.6;'>%s</div>"
+        "</div></div></body></html>",
+        palette.bg,
+        palette.fg,
+        palette.border,
+        palette.bg,
+        palette.heading,
+        escaped_title,
+        message_html ? message_html : "");
+    webkit_web_view_load_html(target_wv, html, "file:///");
+    g_free(html);
+    g_free(escaped_title);
+}
+
 
 
 
@@ -392,6 +430,9 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data); // for
 static void on_random_clicked(GtkButton *btn, gpointer user_data);
 static void maybe_show_startup_random_word(void);
 static void refresh_search_results(void);
+static void render_idle_page_to_webview(WebKitWebView *target_wv,
+                                        const char *title,
+                                        const char *message_html);
 static void populate_search_sidebar(const char *query);
 static void execute_search_now(void);
 static void activate_dictionary_entry(DictEntry *e);
@@ -2836,7 +2877,8 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
     char *query = normalize_headword_for_search(query_raw, FALSE);
 
     if (!query || strlen(query) == 0) {
-        webkit_web_view_load_html(target_wv, "<html><body style='font-family: sans-serif; background: #1e1e21; color: #ffffff; text-align: center; margin-top: 2em; opacity: 0.7;'><h2>Diction</h2><p>Start typing to search...</p></body></html>", "file:///");
+        render_idle_page_to_webview(target_wv, "Diction", "Start typing to search...");
+        set_tab_metadata(target_wv, "", "Diction", 0);
         g_free(query);
         return;
     }
@@ -2886,14 +2928,12 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
         }
     } else {
         set_tab_metadata(target_wv, query, "No Match", 1);
-        int dark_mode = style_manager && adw_style_manager_get_dark(style_manager) ? 1 : 0;
-        const char *text_color = dark_mode ? "#aaaaaa" : "#666666";
         char *escaped_query = safe_markup_escape_n(query, -1);
-        char buf[1024];
-        snprintf(buf, sizeof(buf),
-            "<html><body style='background: #1e1e21; margin: 0;'><div style='padding: 20px; color: %s; font-style: italic;'>"
-            "No exact match for <b>%s</b> in any dictionary.</div></body></html>", text_color, escaped_query ? escaped_query : query);
-        webkit_web_view_load_html(target_wv, buf, "file:///");
+        char *message = g_strdup_printf(
+            "No exact match for <b>%s</b> in any dictionary.",
+            escaped_query ? escaped_query : query);
+        render_idle_page_to_webview(target_wv, "No Match", message);
+        g_free(message);
         g_free(escaped_query);
     }
     g_string_free(html_res, TRUE);
@@ -3056,6 +3096,8 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     
     g_free(display_query);
 
+    populate_search_sidebar(query);
+
     if (last_search_query && strcmp(query, last_search_query) == 0) return;
 
     g_free(last_search_query);
@@ -3201,14 +3243,24 @@ static void refresh_search_results(void) {
 
     GListModel *pages = G_LIST_MODEL(adw_tab_view_get_pages(tab_view));
     guint n_pages = g_list_model_get_n_items(pages);
+    AdwTabPage *selected_page = adw_tab_view_get_selected_page(tab_view);
     for (guint i = 0; i < n_pages; i++) {
         AdwTabPage *page = ADW_TAB_PAGE(g_list_model_get_item(pages, i));
         GtkWidget *scroll = adw_tab_page_get_child(page);
-        if (GTK_IS_SCROLLED_WINDOW(scroll)) {
-            GtkWidget *wv = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
-            if (WEBKIT_IS_WEB_VIEW(wv)) {
-                const char *query = (const char *)g_object_get_data(G_OBJECT(page), "search-query");
-                render_query_to_webview(query, WEBKIT_WEB_VIEW(wv), FALSE);
+        WebKitWebView *wv = get_web_view_from_scroll(scroll);
+        if (wv) {
+            const char *query = (const char *)g_object_get_data(G_OBJECT(page), "search-query");
+            const char *live_query = search_entry
+                ? gtk_editable_get_text(GTK_EDITABLE(search_entry))
+                : NULL;
+            if ((!query || !*query) && page == selected_page && live_query && *live_query) {
+                query = live_query;
+            }
+
+            if (query && *query) {
+                render_query_to_webview(query, wv, FALSE);
+            } else {
+                render_idle_page_to_webview(wv, "Diction", "Start typing to search...");
             }
         }
     }
@@ -3243,11 +3295,9 @@ static void update_theme_colors(void) {
         for (guint i = 0; i < n_pages; i++) {
             AdwTabPage *page = ADW_TAB_PAGE(g_list_model_get_item(pages, i));
             GtkWidget *scroll = adw_tab_page_get_child(page);
-            if (GTK_IS_SCROLLED_WINDOW(scroll)) {
-                GtkWidget *wv = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
-                if (WEBKIT_IS_WEB_VIEW(wv)) {
-                    webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(wv), &bg_color);
-                }
+            WebKitWebView *wv = get_web_view_from_scroll(scroll);
+            if (wv) {
+                webkit_web_view_set_background_color(wv, &bg_color);
             }
         }
     }
@@ -3475,15 +3525,13 @@ static void apply_font_to_webview(void *user_data) {
         for (guint i = 0; i < n_pages; i++) {
             AdwTabPage *page = ADW_TAB_PAGE(g_list_model_get_item(pages, i));
             GtkWidget *scroll = adw_tab_page_get_child(page);
-            if (GTK_IS_SCROLLED_WINDOW(scroll)) {
-                GtkWidget *wv = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
-                if (WEBKIT_IS_WEB_VIEW(wv)) {
-                    WebKitSettings *web_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(wv));
-                    if (app_settings->font_family && *app_settings->font_family)
-                        webkit_settings_set_default_font_family(web_settings, app_settings->font_family);
-                    if (app_settings->font_size > 0)
-                        webkit_settings_set_default_font_size(web_settings, (guint32)app_settings->font_size);
-                }
+            WebKitWebView *wv = get_web_view_from_scroll(scroll);
+            if (wv) {
+                WebKitSettings *web_settings = webkit_web_view_get_settings(wv);
+                if (app_settings->font_family && *app_settings->font_family)
+                    webkit_settings_set_default_font_family(web_settings, app_settings->font_family);
+                if (app_settings->font_size > 0)
+                    webkit_settings_set_default_font_size(web_settings, (guint32)app_settings->font_size);
             }
         }
     }
@@ -3594,10 +3642,7 @@ static void reload_dictionaries_from_settings(void *user_data) {
     dictionary_loading_in_progress = FALSE;
 
     // Show "Reloading..." and start async scan
-    webkit_web_view_load_html(web_view,
-        "<html><body style='font-family: sans-serif; text-align: center; margin-top: 3em; opacity: 0.6;'>"
-        "<h2>Reloading dictionaries\u2026</h2><p>Please wait.</p>"
-        "</body></html>", "file:///");
+    render_idle_page_to_webview(web_view, "Reloading dictionaries...", "Please wait.");
 
     if (!active_scope_id) {
         active_scope_id = g_strdup("all");
@@ -4838,6 +4883,7 @@ static AdwTabPage *create_new_tab(const char *title, gboolean select_it) {
     gtk_widget_set_vexpand(web_scroll, TRUE);
     gtk_widget_set_hexpand(web_scroll, TRUE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(web_scroll), GTK_WIDGET(wv));
+    g_object_set_data(G_OBJECT(web_scroll), "web-view", wv);
     
     AdwTabPage *page = adw_tab_view_append(tab_view, web_scroll);
     adw_tab_page_set_title(page, title ? title : "Search");
@@ -5233,10 +5279,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
     apply_font_to_webview(NULL);
 
-    webkit_web_view_load_html(web_view,
-        "<html><body style='font-family: sans-serif; background: #1e1e21; color: #ffffff; text-align: center; margin-top: 3em; opacity: 0.6;'>"
-        "<h2>Loading dictionaries…</h2><p>Please wait.</p>"
-        "</body></html>", "file:///");
+    render_idle_page_to_webview(web_view, "Loading dictionaries...", "Please wait.");
 
     // Start async loading if we have settings-based dirs
     if (!all_dicts || had_cached_entries) {
@@ -5263,10 +5306,10 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
             active_entry = all_dicts;
             populate_dict_sidebar();
         }
-        webkit_web_view_load_html(web_view,
-            "<html><body style='font-family: sans-serif; background: #1e1e21; color: #ffffff; padding: 20px;'>"
-            "<h2>Welcome to Diction</h2>"
-            "<p>Select a dictionary from the sidebar and start searching.</p></body></html>", "file:///");
+        render_idle_page_to_webview(
+            web_view,
+            "Welcome to Diction",
+            "Select a dictionary from the sidebar and start searching.");
         gtk_window_present(GTK_WINDOW(window));
     }
 
