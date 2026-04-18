@@ -397,6 +397,7 @@ static void execute_search_now(void);
 static void activate_dictionary_entry(DictEntry *e);
 static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded);
 static gboolean on_dict_loaded_idle(gpointer user_data);
+static void apply_font_to_webview(void *user_data);
 
 #define BUCKET_COUNT 6
 
@@ -2817,38 +2818,28 @@ static void on_nav_forward_clicked(GtkButton *btn, gpointer user_data) {
     }
 }
 
-static void execute_search_now_for_query(const char *query_raw, gboolean push_history) {
-    if (search_execute_source_id != 0) {
-        g_source_remove(search_execute_source_id);
-        search_execute_source_id = 0;
+static void set_tab_metadata(WebKitWebView *wv, const char *query, const char *title, int is_firm) {
+    if (!tab_view || !wv) return;
+    GtkWidget *scroll = gtk_widget_get_ancestor(GTK_WIDGET(wv), GTK_TYPE_SCROLLED_WINDOW);
+    if (!scroll) return;
+    AdwTabPage *page = adw_tab_view_get_page(tab_view, scroll);
+    if (page) {
+        if (query) g_object_set_data_full(G_OBJECT(page), "search-query", g_strdup(query), g_free);
+        if (title) adw_tab_page_set_title(page, title);
+        g_object_set_data(G_OBJECT(page), "is-firm", GINT_TO_POINTER(is_firm));
     }
+}
 
-    if (!search_entry) {
-        return;
-    }
+static void render_query_to_webview(const char *query_raw, WebKitWebView *target_wv, gboolean push_history) {
+    if (!target_wv) return;
 
     char *query = normalize_headword_for_search(query_raw, FALSE);
 
-    if (query && *query) {
-        fprintf(stderr, "[Query]: '%s'\n", query);
-    }
-
-
-
     if (!query || strlen(query) == 0) {
-        cancel_sidebar_search();
-        populate_search_sidebar(NULL);
-        WebKitWebView *wv = get_current_web_view();
-        if (wv) webkit_web_view_load_html(wv, "<h2>Diction</h2><p>Start typing to search...</p>", "file:///");
-        for (DictEntry *e = all_dicts; e; e = e->next) {
-            e->has_matches = FALSE;
-        }
-        populate_dict_sidebar();
+        webkit_web_view_load_html(target_wv, "<html><body style='font-family: sans-serif; background: #1e1e21; color: #ffffff; text-align: center; margin-top: 2em; opacity: 0.7;'><h2>Diction</h2><p>Start typing to search...</p></body></html>", "file:///");
         g_free(query);
         return;
     }
-
-
 
     GString *html_res = g_string_new("<html><body>");
     char *escaped_query_attr = safe_markup_escape_n(query, -1);
@@ -2869,8 +2860,6 @@ static void execute_search_now_for_query(const char *query_raw, gboolean push_hi
         while (pos != (size_t)-1) {
             const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
             if (!res) break;
-
-            /* Verify we are still within the agnostic-match group */
             if (compare_headword(e->dict->data, res, query, strlen(query)) != 0) break;
 
             char *raw_word = g_strndup(e->dict->data + res->h_off, res->h_len);
@@ -2880,68 +2869,44 @@ static void execute_search_now_for_query(const char *query_raw, gboolean push_hi
             if (matches) {
                 append_rendered_entry_html(html_res, e, res, dict_idx, &dict_header_shown, &found_count);
             }
-            
             pos++;
             if (pos >= flat_index_count(e->dict->index)) break;
         }
-
         dict_idx++;
     }
 
     if (found_count > 0) {
         g_string_append(html_res, "</div></body></html>");
-        WebKitWebView *wv = get_current_web_view();
-        if (wv) webkit_web_view_load_html(wv, html_res->str, "file:///");
-        if (push_history) {
+        webkit_web_view_load_html(target_wv, html_res->str, "file:///");
+        set_tab_metadata(target_wv, query, query, 1);
+        if (push_history && target_wv == get_current_web_view()) {
             update_history_word(query);
             const char *current_search_query = gtk_editable_get_text(GTK_EDITABLE(search_entry));
             push_to_nav_history(query, current_search_query);
         }
     } else {
-        guint enabled_dicts = 0;
-        guint loaded_dicts = 0;
-        for (DictEntry *e = all_dicts; e; e = e->next) {
-            if (!dict_entry_in_active_scope(e)) {
-                continue;
-            }
-            enabled_dicts++;
-            if (e->dict && e->dict->index) {
-                loaded_dicts++;
-            }
-        }
-
-        // Theme-aware no results message
+        set_tab_metadata(target_wv, query, "No Match", 1);
         int dark_mode = style_manager && adw_style_manager_get_dark(style_manager) ? 1 : 0;
         const char *text_color = dark_mode ? "#aaaaaa" : "#666666";
-
         char *escaped_query = safe_markup_escape_n(query, -1);
-        char buf[768];
+        char buf[1024];
         snprintf(buf, sizeof(buf),
-            "<div style='padding: 20px; color: %s; font-style: italic;'>"
-            "No exact match for <b>%s</b> in any dictionary.</div>", text_color, query);
-        if (escaped_query) {
-            snprintf(buf, sizeof(buf),
-                "<div style='padding: 20px; color: %s; font-style: italic;'>"
-                "No exact match for <b>%s</b> in any dictionary.</div>", text_color, escaped_query);
-        }
-        if (dictionary_loading_in_progress && loaded_dicts < enabled_dicts) {
-            char loading_note[256];
-            g_snprintf(loading_note, sizeof(loading_note),
-                "<div style='padding: 0 20px 20px 20px; color: %s; opacity: 0.72;'>"
-                "Still loading %u of %u dictionaries in the background.</div>",
-                text_color, loaded_dicts, enabled_dicts);
-            g_strlcat(buf, loading_note, sizeof(buf));
-        }
-        WebKitWebView *wv = get_current_web_view();
-        if (wv) webkit_web_view_load_html(wv, buf, "file:///");
+            "<html><body style='background: #1e1e21; margin: 0;'><div style='padding: 20px; color: %s; font-style: italic;'>"
+            "No exact match for <b>%s</b> in any dictionary.</div></body></html>", text_color, escaped_query ? escaped_query : query);
+        webkit_web_view_load_html(target_wv, buf, "file:///");
         g_free(escaped_query);
     }
     g_string_free(html_res, TRUE);
-
-    populate_dict_sidebar();
-    populate_search_sidebar(query);
     g_free(query_key);
     g_free(query);
+}
+
+static void execute_search_now_for_query(const char *query_raw, gboolean push_history) {
+    if (search_execute_source_id != 0) {
+        g_source_remove(search_execute_source_id);
+        search_execute_source_id = 0;
+    }
+    render_query_to_webview(query_raw, get_current_web_view(), push_history);
 }
 
 static void execute_search_now(void) {
@@ -3001,14 +2966,7 @@ static void append_rendered_word_html_impl(const char *raw_word, gboolean push_h
     }
 
     if (found_count > 0) {
-        if (tab_view) {
-            AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
-            if (page) {
-                adw_tab_page_set_title(page, display_title);
-                g_object_set_data_full(G_OBJECT(page), "search-query", g_strdup(query), g_free);
-                g_object_set_data(G_OBJECT(page), "is-firm", GINT_TO_POINTER(1));
-            }
-        }
+        set_tab_metadata(get_current_web_view(), query, display_title, 1);
         
         if (push_history) {
             update_history_word(query);
@@ -3237,26 +3195,28 @@ static void activate_dictionary_entry(DictEntry *e) {
 }
 
 // Refresh the current search results when theme changes
+// Refresh the current search results when theme changes
 static void refresh_search_results(void) {
-    if (!search_entry) return;
+    if (!tab_view) return;
 
-    const char *query = gtk_editable_get_text(GTK_EDITABLE(search_entry));
-    if (!query || strlen(query) == 0) {
-        // Refresh placeholder
-        int dark_mode = style_manager && adw_style_manager_get_dark(style_manager) ? 1 : 0;
-        const char *bg = dark_mode ? "#1e1e1e" : "#ffffff";
-        const char *fg = dark_mode ? "#dddddd" : "#222222";
-        char html[256];
-        snprintf(html, sizeof(html),
-            "<html><body style='font-family: sans-serif; background: %s; color: %s; "
-            "text-align: center; margin-top: 2em; opacity: 0.7;'>"
-            "<h2>Diction</h2><p>Start typing to search...</p></body></html>",
-            bg, fg);
-        webkit_web_view_load_html(web_view, html, "file:///");
-        return;
+    GListModel *pages = G_LIST_MODEL(adw_tab_view_get_pages(tab_view));
+    guint n_pages = g_list_model_get_n_items(pages);
+    for (guint i = 0; i < n_pages; i++) {
+        AdwTabPage *page = ADW_TAB_PAGE(g_list_model_get_item(pages, i));
+        GtkWidget *scroll = adw_tab_page_get_child(page);
+        if (GTK_IS_SCROLLED_WINDOW(scroll)) {
+            GtkWidget *wv = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
+            if (WEBKIT_IS_WEB_VIEW(wv)) {
+                const char *query = (const char *)g_object_get_data(G_OBJECT(page), "search-query");
+                render_query_to_webview(query, WEBKIT_WEB_VIEW(wv), FALSE);
+            }
+        }
     }
-
-    execute_search_now();
+    
+    // Also refresh the sidebars based on current selection
+    const char *main_query = search_entry ? gtk_editable_get_text(GTK_EDITABLE(search_entry)) : NULL;
+    populate_search_sidebar(main_query);
+    populate_dict_sidebar();
 }
 
 static double shift_color_component(double val, double amount, int darken) {
@@ -3265,18 +3225,32 @@ static double shift_color_component(double val, double amount, int darken) {
 }
 
 static void update_theme_colors(void) {
-    if (!web_view || !app_settings) return;
-
+    if (!app_settings) return;
+    gboolean is_default_theme = (g_strcmp0(app_settings->color_theme, "default") == 0);
     int dark_mode = adw_style_manager_get_dark(adw_style_manager_get_default()) ? 1 : 0;
 
     dsl_theme_palette palette;
     dict_render_get_theme_palette(app_settings->color_theme, dark_mode, &palette);
 
-    /* Update WebKit background to match palette */
+    /* Update all WebKit views to match palette */
     GdkRGBA bg_color;
     if (!gdk_rgba_parse(&bg_color, palette.bg))
-        gdk_rgba_parse(&bg_color, dark_mode ? "#1e1e1e" : "#ffffff");
-    webkit_web_view_set_background_color(web_view, &bg_color);
+        gdk_rgba_parse(&bg_color, dark_mode ? "#1e1e21" : "#ffffff");
+
+    if (tab_view) {
+        GListModel *pages = G_LIST_MODEL(adw_tab_view_get_pages(tab_view));
+        guint n_pages = g_list_model_get_n_items(pages);
+        for (guint i = 0; i < n_pages; i++) {
+            AdwTabPage *page = ADW_TAB_PAGE(g_list_model_get_item(pages, i));
+            GtkWidget *scroll = adw_tab_page_get_child(page);
+            if (GTK_IS_SCROLLED_WINDOW(scroll)) {
+                GtkWidget *wv = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
+                if (WEBKIT_IS_WEB_VIEW(wv)) {
+                    webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(wv), &bg_color);
+                }
+            }
+        }
+    }
 
     if (!dynamic_theme_provider) {
         dynamic_theme_provider = gtk_css_provider_new();
@@ -3313,9 +3287,12 @@ static void update_theme_colors(void) {
     unsigned int ar = 0x33, ag = 0x99, ab = 0xcc;
     if (palette.accent && palette.accent[0] == '#' && strlen(palette.accent) >= 7)
         sscanf(palette.accent + 1, "%02x%02x%02x", &ar, &ag, &ab);
-    char hover_color[32];
-    g_snprintf(hover_color, sizeof(hover_color),
-               "rgba(%u,%u,%u,0.15)", ar, ag, ab);
+    char hover_color[64];
+    if (is_default_theme) {
+        g_strlcpy(hover_color, dark_mode ? "rgba(255, 255, 255, 0.06)" : "rgba(0, 0, 0, 0.05)", sizeof(hover_color));
+    } else {
+        g_snprintf(hover_color, sizeof(hover_color), "rgba(%u,%u,%u,0.15)", ar, ag, ab);
+    }
     char select_color[32];
     g_snprintf(select_color, sizeof(select_color),
                "rgba(%u,%u,%u,0.25)", ar, ag, ab);
@@ -3326,6 +3303,24 @@ static void update_theme_colors(void) {
      * Direct property overrides are added below as a belt-and-suspenders
      * fallback, but @define-color is what actually moves the needle.
      */
+    /* is_default_theme declared above */
+
+    const char *w_bg = (is_default_theme) ? (dark_mode ? "#1e1e21" : "#ffffff") : palette.bg;
+    const char *h_bg = (is_default_theme) ? (dark_mode ? "#1e1e21" : "#ffffff") : palette.bg;
+    const char *ch_bg = (is_default_theme) ? (dark_mode ? "#1e1e21" : "#f6f6f6") : palette.bg;
+    const char *w_fg = (is_default_theme) ? (dark_mode ? "#ffffff" : "#222222") : palette.fg;
+    const char *sidebar_bg = (is_default_theme) ? (dark_mode ? "#2e2e32" : "#f6f6f6") : c_chrome;
+    const char *accent = (is_default_theme) ? (dark_mode ? "#3584e4" : "#e45649") : palette.accent;
+    const char *popover_bg = (is_default_theme) ? (dark_mode ? "#2e2e32" : "#ffffff") : c_surface;
+
+    /* Selection colors: standard blue for default, palette accent for others */
+    char sidebar_select[64];
+    if (is_default_theme) {
+        g_strlcpy(sidebar_select, dark_mode ? "rgba(255, 255, 255, 0.1)" : "rgba(0, 0, 0, 0.08)", sizeof(sidebar_select));
+    } else {
+        g_snprintf(sidebar_select, sizeof(sidebar_select), "rgba(%u,%u,%u,0.25)", ar, ag, ab);
+    }
+
     char *css = g_strdup_printf(
         "@define-color window_bg_color %s;\n"
         "@define-color window_fg_color %s;\n"
@@ -3340,17 +3335,22 @@ static void update_theme_colors(void) {
         "@define-color popover_fg_color %s;\n"
         "@define-color accent_bg_color %s;\n"
         "@define-color accent_fg_color #ffffff;\n"
+        "\n"
+        "/* Standard search entry selection */\n"
+        "selection { background-color: @accent_bg_color; color: @accent_fg_color; }\n"
+        "entry selection { background-color: @accent_bg_color; color: @accent_fg_color; }\n"
+        "\n"
         "window.background {\n"
-        "  background-color: %s;\n"
-        "  color: %s;\n"
+        "  background-color: @window_bg_color;\n"
+        "  color: @window_fg_color;\n"
         "}\n"
         "headerbar {\n"
-        "  background-color: %s;\n" /* Content header color */
-        "  color: %s;\n"
+        "  background-color: @headerbar_bg_color;\n"
+        "  color: @headerbar_fg_color;\n"
         "  border-bottom: none;\n"
         "}\n"
         ".sidebar, .navigation-sidebar, .sidebar listview, .navigation-sidebar listview, .sidebar list, .navigation-sidebar list, .sidebar scrolledwindow, .navigation-sidebar scrolledwindow {\n"
-        "  background-color: %s;\n"
+        "  background-color: @sidebar_bg_color;\n"
         "  border: none;\n"
         "}\n"
         ".navigation-sidebar {\n"
@@ -3359,12 +3359,23 @@ static void update_theme_colors(void) {
         ".sidebar {\n"
         "  border: none;\n"
         "}\n"
+        "/* Navigation sidebar item styling - user prefers opacity over color for selection */\n"
+        ".navigation-sidebar row, .navigation-sidebar listitem {\n"
+        "  margin: 2px 8px;\n"
+        "  padding: 6px 10px;\n"
+        "  border-radius: 8px;\n"
+        "  transition: background-color 150ms ease-out, color 150ms ease-out;\n"
+        "}\n"
         "row, listitem {\n"
-        "  color: %s;\n"
+        "  color: inherit;\n"
         "}\n"
         "row:selected, listitem:selected {\n"
         "  background-color: %s;\n"
-        "  color: %s;\n"
+        "  color: inherit;\n"
+        "}\n"
+        "/* Explicitly set webview backgrounds */\n"
+        "webkitwebview, webview {\n"
+        "  background-color: @view_bg_color;\n"
         "}\n"
         "row:hover:not(:selected), listitem:hover:not(:selected) {\n"
         "  background-color: %s;\n"
@@ -3373,13 +3384,15 @@ static void update_theme_colors(void) {
         "  background-color: transparent;\n"
         "}\n"
         "popover > contents, popovermenu > contents {\n"
-        "  background-color: %s;\n"
-        "  color: %s;\n"
+        "  background-color: @popover_bg_color;\n"
+        "  color: @popover_fg_color;\n"
         "  padding: 0;\n"
+        "  border-radius: 12px;\n"
         "}\n"
+        "/* Popup menu item styling */\n"
         "popover > contents row,\n"
         "popover > contents listitem {\n"
-        "  color: %s;\n"
+        "  color: inherit;\n"
         "  background-color: transparent;\n"
         "}\n"
         "popover > contents row:hover:not(:selected),\n"
@@ -3387,37 +3400,50 @@ static void update_theme_colors(void) {
         "  background-color: %s;\n"
         "}\n"
         "popover > contents row:checked {\n"
-        "  color: %s;\n"
+        "  color: @accent_bg_color;\n"
+        "}\n"
+        "/* About dialog styles */\n"
+        "window.about label.version {\n"
+        "  opacity: 0.6;\n"
+        "}\n"
+        "label.dim-label, .dim-label {\n"
+        "  opacity: 0.7;\n"
+        "}\n"
+        ".content-header, .content-header headerbar {\n"
+        "  background-color: %s;\n"
+        "  border-bottom: none;\n"
+        "  box-shadow: none;\n"
+        "}\n"
+        ".article-view-container, adwtoolbarview > stack {\n"
+        "  background-color: @view_bg_color;\n"
+        "}\n"
+        "tabbar, .tab-bar, tabbar box {\n"
+        "  background-color: %s;\n"
+        "  background-image: none;\n"
+        "  box-shadow: none;\n"
+        "  border-style: none;\n"
+        "  border-bottom: none;\n"
+        "}\n"
+        "adwtoolbarview separator, adwtoolbarview > stack > separator {\n"
+        "  min-height: 0;\n"
+        "  opacity: 0;\n"
+        "  background: transparent;\n"
         "}\n",
-        /* @define-color (10 args)*/
-        palette.bg, palette.fg,
-        palette.bg, palette.fg,
-        palette.bg, palette.fg,
-        c_chrome, palette.fg,
-        c_surface, palette.fg,
-        palette.accent,
-        /* window/background (2) */
-        palette.bg, palette.fg,
-        /* default headerbar (2) */
-        palette.bg, palette.fg,
-        /* sidebar background (1) */
-        c_chrome,
+        /* @define-color values */
+        w_bg, w_fg, ch_bg, w_fg, h_bg, w_fg,
+        sidebar_bg, w_fg, popover_bg, w_fg, accent,
         /* sidebar border (1) */
         palette.border,
-        /* row/listitem (1) */
-        palette.fg,
-        /* row:selected bg+fg (2) */
-        select_color, palette.accent,
+        /* row:selected (1) */
+        sidebar_select,
         /* row:hover (1) */
         hover_color,
-        /* popover contents bg+fg (2) */
-        c_surface, palette.fg,
-        /* popover row color (1) */
-        palette.fg,
         /* popover row hover (1) */
         hover_color,
-        /* popover row:checked accent (1) */
-        palette.accent
+        /* content header (1) */
+        ch_bg,
+        /* tab bar (1) */
+        ch_bg
     );
 
     gtk_css_provider_load_from_string(dynamic_theme_provider, css);
@@ -3428,20 +3454,39 @@ static void update_theme_colors(void) {
 
 static void on_style_manager_changed(AdwStyleManager *manager, GParamSpec *pspec, gpointer user_data) {
     (void)manager; (void)pspec; (void)user_data;
-    update_theme_colors();
+    apply_font_to_webview(NULL);
 }
 
 /* Called whenever font family or size changes in the Appearance tab */
 static void apply_font_to_webview(void *user_data) {
     (void)user_data;
-    if (!web_view || !app_settings) return;
+    if (!app_settings) return;
 
-    /* Also keep WebKit's default-font settings for non-styled pages */
-    WebKitSettings *ws = webkit_web_view_get_settings(web_view);
-    if (app_settings->font_family && *app_settings->font_family)
-        webkit_settings_set_default_font_family(ws, app_settings->font_family);
-    if (app_settings->font_size > 0)
-        webkit_settings_set_default_font_size(ws, (guint32)app_settings->font_size);
+    /* Get current dark mode state */
+    int dark_mode = adw_style_manager_get_dark(adw_style_manager_get_default()) ? 1 : 0;
+    dsl_theme_palette palette;
+    dict_render_get_theme_palette(app_settings->color_theme, dark_mode, &palette);
+    gboolean is_default_theme = (g_strcmp0(app_settings->color_theme, "default") == 0);
+
+    /* Update WebKit settings for ALL tabs */
+    if (tab_view) {
+        GListModel *pages = G_LIST_MODEL(adw_tab_view_get_pages(tab_view));
+        guint n_pages = g_list_model_get_n_items(pages);
+        for (guint i = 0; i < n_pages; i++) {
+            AdwTabPage *page = ADW_TAB_PAGE(g_list_model_get_item(pages, i));
+            GtkWidget *scroll = adw_tab_page_get_child(page);
+            if (GTK_IS_SCROLLED_WINDOW(scroll)) {
+                GtkWidget *wv = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll));
+                if (WEBKIT_IS_WEB_VIEW(wv)) {
+                    WebKitSettings *web_settings = webkit_web_view_get_settings(WEBKIT_WEB_VIEW(wv));
+                    if (app_settings->font_family && *app_settings->font_family)
+                        webkit_settings_set_default_font_family(web_settings, app_settings->font_family);
+                    if (app_settings->font_size > 0)
+                        webkit_settings_set_default_font_size(web_settings, (guint32)app_settings->font_size);
+                }
+            }
+        }
+    }
 
     /* Inject / replace a user stylesheet that forces the font on every
      * element with !important.  This overrides any CSS the page itself has,
@@ -3464,39 +3509,57 @@ static void apply_font_to_webview(void *user_data) {
                 g_snprintf(css, sizeof(css),
                     "* { font-family: \"%s\", sans-serif !important; }"
                     "body { font-size: %dpx !important; }"
-                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
+                    "::selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::-webkit-selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::selection:inactive { background-color: %s !important; color: inherit !important; }\n"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid %s !important; }"
                     ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }",
-                    ff, app_settings->font_size);
+                    ff, app_settings->font_size, 
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.2)" : "rgba(127, 127, 255, 0.15)",
+                    palette.accent);
             else
                 g_snprintf(css, sizeof(css),
                     "* { font-family: %s, sans-serif !important; }"
                     "body { font-size: %dpx !important; }"
-                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
+                    "::selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::-webkit-selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::selection:inactive { background-color: %s !important; color: inherit !important; }\n"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid %s !important; }"
                     ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }",
-                    ff, app_settings->font_size);
+                    ff, app_settings->font_size,
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.2)" : "rgba(127, 127, 255, 0.15)",
+                    palette.accent);
         } else {
             if (strchr(ff, ' ') && ff[0] != '\"' && ff[0] != '\'')
                 g_snprintf(css, sizeof(css),
                     "* { font-family: \"%s\", sans-serif !important; }"
-                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
-                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }", ff);
+                    "::selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::-webkit-selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::selection:inactive { background-color: %s !important; color: inherit !important; }\n"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid %s !important; }"
+                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }",
+                    ff, 
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.2)" : "rgba(127, 127, 255, 0.15)",
+                    palette.accent);
             else
                 g_snprintf(css, sizeof(css),
                     "* { font-family: %s, sans-serif !important; }"
-                    "::selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::-webkit-selection { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "::selection:inactive { background-color: #ff9f40 !important; color: #000000 !important; }"
-                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid #ff9f40 !important; }"
-                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }", ff);
+                    "::selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::-webkit-selection { background-color: %s !important; color: inherit !important; }\n"
+                    "::selection:inactive { background-color: %s !important; color: inherit !important; }\n"
+                    "mark { background-color: transparent !important; color: inherit !important; border-bottom: 2px solid %s !important; }"
+                    ".diction-match { background-color: #ffff00 !important; color: #000000 !important; }",
+                    ff, 
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.4)" : "rgba(127, 127, 255, 0.25)",
+                    (is_default_theme) ? "rgba(100, 150, 255, 0.2)" : "rgba(127, 127, 255, 0.15)",
+                    palette.accent);
         }
 
         font_user_stylesheet = webkit_user_style_sheet_new(
@@ -3507,7 +3570,7 @@ static void apply_font_to_webview(void *user_data) {
         webkit_user_content_manager_add_style_sheet(font_ucm, font_user_stylesheet);
     }
 
-    /* Refresh rendered content so DSL pages also re-generate with new font */
+    /* Refresh UI colors and WebKit background to match new theme/font state */
     update_theme_colors();
 }
 
@@ -4756,19 +4819,13 @@ static AdwTabPage *create_new_tab(const char *title, gboolean select_it) {
     }
     
     if (app_settings) {
-        GdkRGBA bg_color;
+        dsl_theme_palette palette;
         gboolean is_dark = style_manager && adw_style_manager_get_dark(style_manager);
-        if (is_dark) {
-            gdk_rgba_parse(&bg_color, "#1e1e1e");
-        } else {
-            gdk_rgba_parse(&bg_color, "#ffffff");
-        }
-        if (app_settings->render_style &&
-            (g_strcmp0(app_settings->render_style, "slate-card") == 0 ||
-             g_strcmp0(app_settings->render_style, "paper") == 0 ||
-             g_strcmp0(app_settings->render_style, "python") == 0 ||
-             g_strcmp0(app_settings->render_style, "goldendict-ng") == 0)) {
-            gdk_rgba_parse(&bg_color, is_dark ? "#1b1b1b" : "#f6f6f6");
+        dict_render_get_theme_palette(app_settings->color_theme, is_dark, &palette);
+
+        GdkRGBA bg_color;
+        if (!gdk_rgba_parse(&bg_color, palette.bg)) {
+            gdk_rgba_parse(&bg_color, is_dark ? "#1e1e21" : "#ffffff");
         }
         webkit_web_view_set_background_color(wv, &bg_color);
     }
@@ -4820,6 +4877,10 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     }
     AdwApplicationWindow *window = ADW_APPLICATION_WINDOW(adw_application_window_new(app));
     main_window = GTK_WINDOW(window);
+
+    style_manager = adw_style_manager_get_default();
+    update_theme_colors();
+
     g_object_add_weak_pointer(G_OBJECT(window), (gpointer *)&main_window);
     gtk_window_set_title(GTK_WINDOW(window), "Diction");
     gtk_window_set_default_size(GTK_WINDOW(window), 1000, 650);
@@ -5080,6 +5141,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     AdwTabBar *tab_bar = ADW_TAB_BAR(adw_tab_bar_new());
     adw_tab_bar_set_view(tab_bar, tab_view);
     adw_tab_bar_set_autohide(tab_bar, TRUE);
+    adw_toolbar_view_add_top_bar(toolbar_view, GTK_WIDGET(tab_bar));
 
     g_signal_connect(tab_view, "notify::selected-page", G_CALLBACK(on_tab_selected), NULL);
     g_signal_connect(tab_view, "close-page", G_CALLBACK(on_tab_close), NULL);
@@ -5087,7 +5149,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     create_new_tab("Home", TRUE);
 
     GtkWidget *content_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_append(GTK_BOX(content_vbox), GTK_WIDGET(tab_bar));
+    gtk_widget_add_css_class(content_vbox, "article-view-container");
     gtk_box_append(GTK_BOX(content_vbox), GTK_WIDGET(tab_view));
     gtk_box_append(GTK_BOX(content_vbox), create_find_bar());
 
@@ -5149,7 +5211,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         ".navigation-sidebar { background: transparent; }"
         ".navigation-sidebar listitem:hover, .navigation-sidebar row:hover { background: alpha(@theme_fg_color, 0.05); }"
         ".navigation-sidebar listitem:selected, .navigation-sidebar row:selected { background: alpha(@theme_fg_color, 0.1); color: inherit; }"
-        ".content-header { background: @window_bg_color; }"
+        ".content-header { background: transparent; }\n"
         ".menu-item { font-weight: normal; padding: 4px 8px; min-height: 0; }"
         "overlay-split-view > separator { background: @sidebar_bg_color; min-width: 1px; opacity: 1; }"
         "headerbar.sidebar { box-shadow: none; border-bottom: none; margin: 0; padding: 0; }"
@@ -5167,11 +5229,12 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         else
             adw_style_manager_set_color_scheme(style_manager, ADW_COLOR_SCHEME_DEFAULT);
     }
-
     update_theme_colors();
 
+    apply_font_to_webview(NULL);
+
     webkit_web_view_load_html(web_view,
-        "<html><body style='font-family: sans-serif; text-align: center; margin-top: 3em; opacity: 0.6;'>"
+        "<html><body style='font-family: sans-serif; background: #1e1e21; color: #ffffff; text-align: center; margin-top: 3em; opacity: 0.6;'>"
         "<h2>Loading dictionaries…</h2><p>Please wait.</p>"
         "</body></html>", "file:///");
 
@@ -5201,8 +5264,9 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
             populate_dict_sidebar();
         }
         webkit_web_view_load_html(web_view,
+            "<html><body style='font-family: sans-serif; background: #1e1e21; color: #ffffff; padding: 20px;'>"
             "<h2>Welcome to Diction</h2>"
-            "<p>Select a dictionary from the sidebar and start searching.</p>", "file:///");
+            "<p>Select a dictionary from the sidebar and start searching.</p></body></html>", "file:///");
         gtk_window_present(GTK_WINDOW(window));
     }
 

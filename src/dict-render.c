@@ -1678,7 +1678,7 @@ static void close_tag(StrBuf *b, const char *name, ActiveTag *active_tags, int *
 void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_theme_palette *out) {
     /* Set defaults */
     out->fg = dark_mode ? "#e0e0e0" : "#222222";
-    out->bg = dark_mode ? "#1e1e1e" : "#ffffff";
+    out->bg = dark_mode ? "#1e1e21" : "#ffffff";
     out->link = dark_mode ? "#7fb0e0" : "#005bbb";
     out->accent = dark_mode ? "#e0b07f" : "#e45649";
     out->border = dark_mode ? "#444444" : "#cccccc";
@@ -1687,6 +1687,7 @@ void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_th
     out->translit = dark_mode ? "#888888" : "#808080";
     out->ex = out->fg;
     out->com = out->fg;
+    out->pos = "#ffcc80"; /* Requested default for Part of Speech */
 
     if (!theme_name) return;
 
@@ -1762,6 +1763,10 @@ void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_th
     out->trn = out->fg;
     out->ex  = out->fg;
     out->com = out->fg;
+
+    if (theme_name && g_strcmp0(theme_name, "default") != 0) {
+        out->pos = out->accent;
+    }
 }
 
 char* dsl_render_to_html(const char *dsl_text,
@@ -1818,7 +1823,7 @@ char* dsl_render_to_html(const char *dsl_text,
     const char *body_color = palette.fg;
     const char *link_color = palette.link;
     const char *heading_color = palette.heading;
-    const char *pos_color = palette.accent;
+    const char *pos_color = palette.pos;
     const char *border_color = palette.border;
 
     const char *trn_color = palette.trn;
