@@ -831,6 +831,8 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
     size_t dict_size = 0;
     char *title = NULL;
     char *stylesheet = NULL;
+    char *s_lang = NULL;
+    char *t_lang = NULL;
     char *source_dir = g_path_get_dirname(path);
 
     /* ── read header ── */
@@ -895,6 +897,9 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
                 if (xp) encrypted = atoi(xp + 11);
 
                 stylesheet = extract_header_attribute(ascii_hdr, "StyleSheet");
+                
+                s_lang = extract_header_attribute(ascii_hdr, "SourceLanguage");
+                t_lang = extract_header_attribute(ascii_hdr, "TargetLanguage");
 
                 free(ascii_hdr);
                 free(header_raw);
@@ -926,6 +931,8 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
         dict->name = title;
         dict->source_dir = g_strdup(source_dir);
         dict->mdx_stylesheet = stylesheet ? g_strdup(stylesheet) : NULL;
+        dict->source_lang = s_lang;
+        dict->target_lang = t_lang;
         dict->index = flat_index_open(dict->data, dict->size);
 
         /* flat_index_open already reads the index from end of file.

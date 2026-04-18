@@ -1,5 +1,8 @@
 #include <gtk/gtk.h>
+#include <glib.h>
+#include <glib/gstdio.h>
 #include <adwaita.h>
+#include "langid.h"
 #include <webkit/webkit.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -3077,9 +3080,13 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn; (void)user_data;
     if (!all_dicts) return;
 
-    // Count dicts
+    // Count dicts in active scope
     int count = 0;
-    for (DictEntry *e = all_dicts; e; e = e->next) if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0) count++;
+    for (DictEntry *e = all_dicts; e; e = e->next) {
+        if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0 && dict_entry_in_active_scope(e)) {
+            count++;
+        }
+    }
     if (count == 0) return;
 
     // Pick random dict
@@ -3087,7 +3094,7 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
     DictEntry *e = all_dicts;
     int cur = 0;
     while (e) {
-        if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0) {
+        if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0 && dict_entry_in_active_scope(e)) {
             if (cur == target) break;
             cur++;
         }
@@ -3876,6 +3883,51 @@ static void queue_loader_idle(LoadIdleKind kind,
     g_idle_add(on_dict_loaded_idle, ld);
 }
 
+static char* sample_dict_and_detect_lang(DictEntry *entry) {
+    if (!entry || !entry->dict || !entry->dict->index) return NULL;
+    
+    size_t total = flat_index_count(entry->dict->index);
+    if (total == 0) return NULL;
+
+    GString *hw_samples = g_string_new("");
+    GString *def_samples = g_string_new("");
+
+    int count = total < 50 ? (int)total : 50;
+    for (int i = 0; i < count; i++) {
+        size_t idx = rand() % total;
+        const FlatTreeEntry *node = flat_index_get(entry->dict->index, idx);
+        if (!node) continue;
+
+        char *hw = g_strndup(entry->dict->data + node->h_off, node->h_len);
+        char *def = g_strndup(entry->dict->data + node->d_off, node->d_len);
+        
+        g_string_append_printf(hw_samples, " %s ", hw);
+        g_string_append_printf(def_samples, " %s ", def);
+        
+        g_free(hw);
+        g_free(def);
+    }
+
+    const char *hw_lang = langid_guess_language(hw_samples->str);
+    const char *def_lang = langid_guess_language(def_samples->str);
+
+    g_string_free(hw_samples, TRUE);
+    g_string_free(def_samples, TRUE);
+
+    if (g_strcmp0(hw_lang, "Unknown") == 0 && g_strcmp0(def_lang, "Unknown") == 0) {
+        return g_strdup("Mixed");
+    }
+
+    if (g_strcmp0(def_lang, "Unknown") == 0) def_lang = hw_lang;
+    if (g_strcmp0(hw_lang, "Unknown") == 0) hw_lang = def_lang;
+
+    if (g_strcmp0(hw_lang, def_lang) == 0) {
+        return g_strdup_printf("%s", hw_lang);
+    } else {
+        return g_strdup_printf("%s->%s", hw_lang, def_lang);
+    }
+}
+
 static gboolean on_dict_loaded_idle(gpointer user_data) {
     LoadIdleData *ld = user_data;
 
@@ -3913,6 +3965,32 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
                 existing = curr;
                 break;
             }
+        }
+
+        if (!existing && e->dict) {
+            char *guessed = NULL;
+            if (e->dict->source_lang && e->dict->target_lang) {
+                guessed = g_strdup_printf("%s->%s", e->dict->source_lang, e->dict->target_lang);
+            } else if (e->dict->source_lang) {
+                guessed = g_strdup(e->dict->source_lang);
+            } else {
+                guessed = sample_dict_and_detect_lang(e);
+            }
+
+            if (guessed && *guessed) {
+                e->guessed_lang_group = g_strdup(guessed);
+                if (app_settings) {
+                    char *dict_id = settings_make_dictionary_id(e->path);
+                    if (settings_upsert_guessed_group(app_settings, guessed, dict_id)) {
+                        populate_groups_sidebar();
+                    }
+                    g_free(dict_id);
+                }
+            }
+            g_free(guessed);
+            
+            // Re-populate dict sidebar as well to show new group info if we decide to add it to subtitles
+            populate_dict_sidebar();
         }
 
         if (existing) {

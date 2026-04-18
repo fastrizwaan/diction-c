@@ -278,6 +278,7 @@ void dict_loader_free(DictEntry *head) {
         if (head->dict) dict_mmap_close(head->dict);
         free(head->name);
         free(head->path);
+        free(head->guessed_lang_group);
         free(head);
         head = next;
     }

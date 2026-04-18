@@ -36,7 +36,8 @@ srcs = [
   'src/settings.c',
   'src/settings-dialog.c',
   'src/scan-popup.c',
-  'src/tray-icon.c'
+  'src/tray-icon.c',
+  'src/langid.c'
 ]
 
 executable('diction', srcs,

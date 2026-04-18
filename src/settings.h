@@ -18,6 +18,7 @@ typedef struct {
 typedef struct {
     char *id;
     char *name;
+    char *source;        // "user" or "guessed"
     GPtrArray *members;  // Array of dict IDs
 } DictGroup;
 
@@ -66,6 +67,7 @@ void settings_remove_dictionary(AppSettings *settings, const char *id);
 gboolean settings_import_dictionary(AppSettings *settings, const char *src_path);
 void settings_move_dictionary(AppSettings *settings, const char *id, int direction);
 void settings_create_group(AppSettings *settings, const char *name, GPtrArray *dict_ids);
+gboolean settings_upsert_guessed_group(AppSettings *settings, const char *name, const char *dict_id);
 void settings_remove_group(AppSettings *settings, const char *id);
 char* settings_make_dictionary_id(const char *path);
 DictConfig* settings_find_dictionary_by_id(AppSettings *settings, const char *id);

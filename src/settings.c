@@ -514,6 +514,7 @@ static DictGroup* dict_group_new(const char *name) {
     grp->id = g_compute_checksum_for_string(G_CHECKSUM_SHA1, name, -1);
     grp->id = g_strndup(grp->id, 8);
     grp->name = g_strdup(name);
+    grp->source = g_strdup("user");
     grp->members = g_ptr_array_new_with_free_func(g_free);
     return grp;
 }
@@ -522,6 +523,7 @@ static void dict_group_free(DictGroup *grp) {
     if (grp) {
         g_free(grp->id);
         g_free(grp->name);
+        g_free(grp->source);
         g_ptr_array_free(grp->members, TRUE);
         g_free(grp);
     }
@@ -864,6 +866,11 @@ AppSettings* settings_load(void) {
                 const char *gname = json_object_get_string_member(gobj, "name");
                 if (gname) {
                     DictGroup *grp = dict_group_new(gname);
+                    const char *gsource = json_object_has_member(gobj, "source") ? json_object_get_string_member(gobj, "source") : NULL;
+                    if (gsource) {
+                        g_free(grp->source);
+                        grp->source = g_strdup(gsource);
+                    }
                     JsonArray *members = json_object_has_member(gobj, "members")
                         ? json_object_get_array_member(gobj, "members")
                         : NULL;
@@ -942,9 +949,13 @@ void settings_save(AppSettings *settings) {
     JsonArray *groups = json_array_new();
     for (guint i = 0; i < settings->dictionary_groups->len; i++) {
         DictGroup *grp = g_ptr_array_index(settings->dictionary_groups, i);
+        if (g_strcmp0(grp->source, "guessed") == 0) {
+            continue;
+        }
         JsonObject *gobj = json_object_new();
         json_object_set_string_member(gobj, "id", grp->id);
         json_object_set_string_member(gobj, "name", grp->name);
+        json_object_set_string_member(gobj, "source", grp->source);
         JsonArray *members = json_array_new();
         for (guint j = 0; j < grp->members->len; j++) {
             json_array_add_string_element(members, g_ptr_array_index(grp->members, j));
@@ -1346,6 +1357,30 @@ void settings_create_group(AppSettings *settings, const char *name, GPtrArray *d
         g_ptr_array_add(grp->members, g_strdup(g_ptr_array_index(dict_ids, i)));
     }
     g_ptr_array_add(settings->dictionary_groups, grp);
+}
+
+gboolean settings_upsert_guessed_group(AppSettings *settings, const char *name, const char *dict_id) {
+    if (!settings || !name || !dict_id) return FALSE;
+
+    for (guint i = 0; i < settings->dictionary_groups->len; i++) {
+        DictGroup *grp = g_ptr_array_index(settings->dictionary_groups, i);
+        if (g_strcmp0(grp->name, name) == 0 && g_strcmp0(grp->source, "guessed") == 0) {
+            for (guint j = 0; j < grp->members->len; j++) {
+                if (g_strcmp0(g_ptr_array_index(grp->members, j), dict_id) == 0) {
+                    return FALSE;
+                }
+            }
+            g_ptr_array_add(grp->members, g_strdup(dict_id));
+            return FALSE;
+        }
+    }
+
+    DictGroup *grp = dict_group_new(name);
+    g_free(grp->source);
+    grp->source = g_strdup("guessed");
+    g_ptr_array_add(grp->members, g_strdup(dict_id));
+    g_ptr_array_add(settings->dictionary_groups, grp);
+    return TRUE;
 }
 
 void settings_remove_group(AppSettings *settings, const char *id) {

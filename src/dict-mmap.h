@@ -20,6 +20,8 @@ typedef struct DictMmap {
     char *source_dir;
     char *resource_dir;
     char *mdx_stylesheet;
+    char *source_lang;
+    char *target_lang;
     ResourceReader *resource_reader; /* lazy ZIP/MDD resource access */
 } DictMmap;
 

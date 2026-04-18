@@ -173,16 +173,26 @@ static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries, si
             /* Support #NAME "Dictionary Name" header */
             if (len > 6 && strncasecmp(line_start, "#NAME", 5) == 0) {
                 const char *val_start = line_start + 5;
-                while (val_start < line_start + len && (*val_start == ' ' || *val_start == '\t' || *val_start == '\"')) 
-                    val_start++;
+                while (val_start < line_start + len && (*val_start == ' ' || *val_start == '\t' || *val_start == '\"')) val_start++;
                 const char *val_end = line_start + len;
-                while (val_end > val_start && (*(val_end - 1) == '\r' || *(val_end - 1) == '\"' || *(val_end - 1) == ' ' || *(val_end - 1) == '\t'))
-                    val_end--;
+                while (val_end > val_start && (*(val_end - 1) == '\r' || *(val_end - 1) == '\"' || *(val_end - 1) == ' ' || *(val_end - 1) == '\t')) val_end--;
                 
                 if (val_end > val_start && !dict->name) {
                     dict->name = strndup(val_start, (size_t)(val_end - val_start));
                     printf("[DSL] Found dictionary name: %s\n", dict->name);
                 }
+            } else if (len > 17 && strncasecmp(line_start, "#SOURCE_LANGUAGE", 16) == 0) {
+                const char *val_start = line_start + 16;
+                while (val_start < line_start + len && (*val_start == ' ' || *val_start == '\t' || *val_start == '\"')) val_start++;
+                const char *val_end = line_start + len;
+                while (val_end > val_start && (*(val_end - 1) == '\r' || *(val_end - 1) == '\"' || *(val_end - 1) == ' ' || *(val_end - 1) == '\t')) val_end--;
+                if (val_end > val_start && !dict->source_lang) dict->source_lang = strndup(val_start, (size_t)(val_end - val_start));
+            } else if (len > 17 && strncasecmp(line_start, "#TARGET_LANGUAGE", 16) == 0) {
+                const char *val_start = line_start + 16;
+                while (val_start < line_start + len && (*val_start == ' ' || *val_start == '\t' || *val_start == '\"')) val_start++;
+                const char *val_end = line_start + len;
+                while (val_end > val_start && (*(val_end - 1) == '\r' || *(val_end - 1) == '\"' || *(val_end - 1) == ' ' || *(val_end - 1) == '\t')) val_end--;
+                if (val_end > val_start && !dict->target_lang) dict->target_lang = strndup(val_start, (size_t)(val_end - val_start));
             }
             continue;
         }
@@ -716,6 +726,8 @@ void dict_mmap_close(DictMmap *dict) {
         if (dict->source_dir) free(dict->source_dir);
         if (dict->resource_dir) free(dict->resource_dir);
         if (dict->mdx_stylesheet) free(dict->mdx_stylesheet);
+        if (dict->source_lang) free(dict->source_lang);
+        if (dict->target_lang) free(dict->target_lang);
         free(dict);
     }
 }
