@@ -38,6 +38,7 @@ typedef struct {
     const char *ex;
     const char *com;
     const char *pos;
+    const char *string;
 } dsl_theme_palette;
 
 void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_theme_palette *out_palette);
