@@ -1577,27 +1577,28 @@ static char *unescape_xml_entities(const char *text) {
 
 static char *substitute_mdx_stylesheet(const char *text, size_t length, const char *stylesheet_blob, size_t *out_length) {
     char *copy = g_strndup(text ? text : "", length);
-    if (!copy || !stylesheet_blob || !*stylesheet_blob) {
+    if (!copy) {
         if (out_length) {
-            *out_length = copy ? strlen(copy) : 0;
+            *out_length = 0;
         }
-        return copy;
-    }
-
-    char **lines = g_strsplit_set(stylesheet_blob, "\r\n", -1);
-    GPtrArray *filtered = g_ptr_array_new();
-    for (int i = 0; lines[i]; i++) {
-        if (*lines[i]) {
-            g_ptr_array_add(filtered, lines[i]);
-        }
+        return NULL;
     }
 
     GHashTable *styles = g_hash_table_new_full(g_direct_hash, g_direct_equal, NULL, (GDestroyNotify)g_strfreev);
-    for (guint i = 0; i + 2 < filtered->len; i += 3) {
-        char **pair = g_new0(char *, 3);
-        pair[0] = unescape_xml_entities((const char *)g_ptr_array_index(filtered, i + 1));
-        pair[1] = unescape_xml_entities((const char *)g_ptr_array_index(filtered, i + 2));
-        g_hash_table_insert(styles, GINT_TO_POINTER(atoi((const char *)g_ptr_array_index(filtered, i))), pair);
+    char **lines = NULL;
+    GPtrArray *filtered = g_ptr_array_new();
+
+    if (stylesheet_blob && *stylesheet_blob) {
+        lines = g_strsplit_set(stylesheet_blob, "\r\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            g_ptr_array_add(filtered, lines[i]);
+        }
+        for (guint i = 0; i + 2 < filtered->len; i += 3) {
+            char **pair = g_new0(char *, 3);
+            pair[0] = unescape_xml_entities((const char *)g_ptr_array_index(filtered, i + 1));
+            pair[1] = unescape_xml_entities((const char *)g_ptr_array_index(filtered, i + 2));
+            g_hash_table_insert(styles, GINT_TO_POINTER(atoi((const char *)g_ptr_array_index(filtered, i))), pair);
+        }
     }
 
     GString *out = g_string_new("");
@@ -1605,42 +1606,80 @@ static char *substitute_mdx_stylesheet(const char *text, size_t length, const ch
     char *pending_suffix = NULL;
 
     while (*p) {
-        const char *tick = strchr(p, '`');
-        if (!tick || !tick[1]) {
-            g_string_append(out, p);
-            break;
+        const char *next = p;
+        while (*next && *next != '`' && ((unsigned char)*next >= 32 || *next == 9 || *next == 10 || *next == 13)) {
+            next++;
         }
 
-        const char *num_start = tick + 1;
-        const char *num_end = num_start;
-        while (*num_end && g_ascii_isdigit(*num_end)) {
-            num_end++;
+        g_string_append_len(out, p, next - p);
+        p = next;
+
+        if (!*p) break;
+
+        int id = -1;
+        if (*p == '`') {
+            if (!p[1]) {
+                g_string_append_c(out, '`');
+                p++;
+                continue;
+            }
+            const char *num_start = p + 1;
+            const char *num_end = num_start;
+            while (*num_end && g_ascii_isdigit(*num_end)) {
+                num_end++;
+            }
+            if (num_end > num_start) {
+                char *id_text = g_strndup(num_start, num_end - num_start);
+                id = atoi(id_text);
+                g_free(id_text);
+                p = (*num_end == '`') ? (num_end + 1) : num_end;
+            } else {
+                g_string_append_c(out, '`');
+                p++;
+                continue;
+            }
+        } else {
+            /* Literal control character marker */
+            id = (unsigned char)*p;
+            p++;
         }
-        if (*num_end != '`' || num_end == num_start) {
-            g_string_append_len(out, p, (tick - p) + 1);
-            p = tick + 1;
-            continue;
-        }
 
-        g_string_append_len(out, p, tick - p);
+        if (id != -1) {
+            char **pair = g_hash_table_lookup(styles, GINT_TO_POINTER(id));
+            const char *def_start = NULL;
+            const char *def_end = NULL;
 
-        char *id_text = g_strndup(num_start, num_end - num_start);
-        char **pair = g_hash_table_lookup(styles, GINT_TO_POINTER(atoi(id_text)));
-        g_free(id_text);
+            if (!pair) {
+                // Default MDX markers
+                if (id == 3) { def_start = "<span class=\"m3\">"; def_end = "</span>"; }
+                else if (id == 4) { def_start = "<span class=\"m4\">"; def_end = "</span>"; }
+                else if (id == 5) { def_start = "<span class=\"m5\">"; def_end = "</span>"; }
+                else if (id == 6) { def_start = "<span class=\"m6\">"; def_end = "</span>"; }
+                else if (id == 7) { def_start = "<span class=\"m7\">"; def_end = "</span>"; }
+                else if (id == 8) { def_start = "<span class=\"m8\">"; def_end = "</span>"; }
+                else if (id == 11) { def_start = "<span class=\"m11\">"; def_end = "</span>"; }
+                else if (id == 1 || id == 2) { 
+                    /* Marker 1 and 2 are used as reset/closer. */
+                }
+            }
 
-        if (pair) {
-            if (pending_suffix) {
+            if (pair || def_start) {
+                if (pending_suffix) {
+                    g_string_append(out, pending_suffix);
+                    g_clear_pointer(&pending_suffix, g_free);
+                }
+                if (pair) {
+                    g_string_append(out, pair[0] ? pair[0] : "");
+                    pending_suffix = g_strdup(pair[1] ? pair[1] : "");
+                } else {
+                    g_string_append(out, def_start);
+                    pending_suffix = g_strdup(def_end);
+                }
+            } else if (pending_suffix) {
                 g_string_append(out, pending_suffix);
                 g_clear_pointer(&pending_suffix, g_free);
             }
-            g_string_append(out, pair[0] ? pair[0] : "");
-            pending_suffix = g_strdup(pair[1] ? pair[1] : "");
-        } else if (pending_suffix) {
-            g_string_append(out, pending_suffix);
-            g_clear_pointer(&pending_suffix, g_free);
         }
-
-        p = num_end + 1;
     }
 
     if (pending_suffix) {
@@ -2129,8 +2168,19 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, ex_color);
     buf_append_str(&b, " !important;}");
     buf_append_str(&b, "font[color=brown],font[color=\"brown\"],font[color=\"#a52a2a\"],font[color=gray],font[color=\"gray\"],font[color=\"#808080\"]{color:");
-    buf_append_str(&b, com_color);
+    buf_append_str(&b, translit_color);
     buf_append_str(&b, " !important;}");
+    /* MDX standard class markers */
+    buf_append_str(&b, ".m1{color:"); buf_append_str(&b, heading_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m2{color:inherit;}");
+    buf_append_str(&b, ".m3{color:"); buf_append_str(&b, link_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m4{color:"); buf_append_str(&b, trn_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m5{color:"); buf_append_str(&b, ex_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m6{color:"); buf_append_str(&b, pos_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m7{color:"); buf_append_str(&b, pos_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m8{color:"); buf_append_str(&b, link_color); buf_append_str(&b, ";}");
+    buf_append_str(&b, ".m11{color:"); buf_append_str(&b, translit_color); buf_append_str(&b, ";}");
+    /* entry structure */
     buf_append_str(&b, ".rendered-entry{margin:0 0 10px 0;}");
     buf_append_str(&b, ".rendered-entry-body{line-height:1.45;}");
     buf_append_str(&b, ".dict-source-bar{background:");
