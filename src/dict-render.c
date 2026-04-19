@@ -187,7 +187,8 @@ static void lift_hex_color_for_dark_theme(char *output, const char *hex, size_t 
     }
 
     double luminance = 0.2126 * (double)r + 0.7152 * (double)g + 0.0722 * (double)b;
-    double factor = luminance < 70.0 ? 0.82 : (luminance < 135.0 ? 0.66 : 0.46);
+    /* Factor to target ~50-60% lightness (128-160 range) for dark colors */
+    double factor = luminance < 70.0 ? 0.62 : (luminance < 135.0 ? 0.45 : 0.28);
     r = (size_t)(r + (245 - r) * factor);
     g = (size_t)(g + (245 - g) * factor);
     b = (size_t)(b + (245 - b) * factor);
@@ -296,7 +297,8 @@ static char *adjust_color_value_for_theme(const char *value, gboolean dark_mode,
                     } else {
                         double luminance = 0.2126 * (double)r + 0.7152 * (double)g + 0.0722 * (double)b;
                         if (luminance < 170.0) {
-                            double factor = luminance < 70.0 ? 0.82 : (luminance < 135.0 ? 0.66 : 0.46);
+                            /* Factor to target ~50-60% lightness for dark colors */
+                            double factor = luminance < 70.0 ? 0.62 : (luminance < 135.0 ? 0.45 : 0.28);
                             r += (245 - r) * factor;
                             g += (245 - g) * factor;
                             b += (245 - b) * factor;
