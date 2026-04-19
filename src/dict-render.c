@@ -1792,9 +1792,9 @@ void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_th
     out->heading = dark_mode ? "#e0e0e0" : "#222222";
     out->trn = out->fg;
     out->translit = dark_mode ? "#888888" : "#808080";
-    out->ex = out->fg;
+    out->ex = dark_mode ? "#9ae59a" : "#1e8e3e"; /* default green */
     out->com = out->fg;
-    out->pos = dark_mode ? "#ffcc80" : "#c90016"; /* Orange in dark, Red in light */
+    out->pos = dark_mode ? "#db8383" : "#dc3b3b"; 
 
     if (!theme_name) return;
 
@@ -1866,9 +1866,11 @@ void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_th
         out->bg = "#f4ecd8"; out->fg = "#5d4a44"; out->accent = "#8c3b3b"; out->heading = "#5d4a44"; out->link = "#704214"; out->border = "#dad0b8";
         out->translit = "#9c8b7a";
     }
-    /* trn, ex, and com all track fg; override per-theme above if needed */
+    /* trn and com track fg; ex tracks fg only for non-default themes */
     out->trn = out->fg;
-    out->ex  = out->fg;
+    if (theme_name && g_strcmp0(theme_name, "default") != 0) {
+        out->ex = out->fg;
+    }
     out->com = out->fg;
 
     if (theme_name && g_strcmp0(theme_name, "default") != 0) {
