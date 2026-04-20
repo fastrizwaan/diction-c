@@ -891,6 +891,7 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
     }
 
     int is_v2 = 0, num_size = 4, encoding_is_utf16 = 0, encrypted = 0;
+    char *dict_encoding = NULL;
     uint32_t header_text_size = 0;
 
     unsigned char buf4[4];
@@ -940,8 +941,18 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
                     }
                 }
 
-                char *ep = strstr(ascii_hdr, "Encoding=\"");
-                if (ep && (strstr(ep, "UTF-16") || strstr(ep, "utf-16"))) encoding_is_utf16 = 1;
+                char *enc_raw = extract_header_attribute(ascii_hdr, "Encoding");
+                if (enc_raw && strlen(enc_raw) > 0) {
+                    if (g_ascii_strcasecmp(enc_raw, "UTF-16") == 0 || g_ascii_strcasecmp(enc_raw, "UTF16") == 0) {
+                        encoding_is_utf16 = 1;
+                    } else if (g_ascii_strcasecmp(enc_raw, "UTF-8") == 0 || g_ascii_strcasecmp(enc_raw, "UTF8") == 0) {
+                        encoding_is_utf16 = 0;
+                    } else {
+                        dict_encoding = g_strdup(enc_raw);
+                        encoding_is_utf16 = 0;
+                    }
+                }
+                g_free(enc_raw);
 
                 char *xp = strstr(ascii_hdr, "Encrypted=\"");
                 if (xp) encrypted = atoi(xp + 11);
@@ -1105,7 +1116,23 @@ rebuild_cache:
                             const unsigned char *ws = kp_ent;
                             while (kp_ent < ke_ent && *kp_ent != '\0') kp_ent++;
                             size_t wl = kp_ent - ws; if (wl > 1023) wl = 1023;
-                            memcpy(word, ws, wl); word[wl] = '\0';
+                            
+                            if (dict_encoding && wl > 0) {
+                                GError *err = NULL;
+                                char *utf8 = g_convert((const char*)ws, wl, "UTF-8", dict_encoding, NULL, NULL, &err);
+                                if (utf8) {
+                                    size_t ulen = strlen(utf8);
+                                    if (ulen > 1023) ulen = 1023;
+                                    memcpy(word, utf8, ulen);
+                                    word[ulen] = '\0';
+                                    g_free(utf8);
+                                } else {
+                                    if (err) g_error_free(err);
+                                    memcpy(word, ws, wl); word[wl] = '\0';
+                                }
+                            } else {
+                                memcpy(word, ws, wl); word[wl] = '\0';
+                            }
                             if (kp_ent < ke_ent) kp_ent++;
                         }
                         size_t wlen = strlen(word);
@@ -1201,8 +1228,24 @@ rebuild_cache:
                 if (rec_len > 0 && rec_ptr[rec_len - 1] == 0) {
                     rec_len--;
                 }
-                fwrite(rec_ptr, 1, rec_len, cache);
-                tree_entries[i].d_len = (uint64_t)rec_len;
+                
+                if (dict_encoding && rec_len > 0) {
+                    GError *err = NULL;
+                    char *utf8 = g_convert((const char*)rec_ptr, rec_len, "UTF-8", dict_encoding, NULL, NULL, &err);
+                    if (utf8) {
+                        size_t ulen = strlen(utf8);
+                        fwrite(utf8, 1, ulen, cache);
+                        tree_entries[i].d_len = (uint64_t)ulen;
+                        g_free(utf8);
+                    } else {
+                        if (err) g_error_free(err);
+                        fwrite(rec_ptr, 1, rec_len, cache);
+                        tree_entries[i].d_len = (uint64_t)rec_len;
+                    }
+                } else {
+                    fwrite(rec_ptr, 1, rec_len, cache);
+                    tree_entries[i].d_len = (uint64_t)rec_len;
+                }
             }
 
             fwrite("\n", 1, 1, cache);
@@ -1242,6 +1285,7 @@ rebuild_cache:
     
     fclose(cache);
     fclose(fh);
+    g_free(dict_encoding);
 
     cache_fd = open(cache_path, O_RDONLY);
     struct stat st_final;
