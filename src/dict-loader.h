@@ -21,6 +21,7 @@ typedef struct DictEntry {
     DictMmap *dict;       /* The loaded, mapped, indexed dictionary */
     gboolean has_matches; /* Set during search if this dict has matches */
     char *guessed_lang_group; /* Lazily computed volatile language group like "English->Hindi" */
+    char *icon_path;
     struct DictEntry *next;
 } DictEntry;
 

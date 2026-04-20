@@ -107,25 +107,52 @@ extern DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag
 extern DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint expected);
 
 DictMmap* dict_load_any(const char *path, DictFormat fmt, volatile gint *cancel_flag, gint expected_generation) {
+    DictMmap *dict = NULL;
     switch (fmt) {
         case DICT_FORMAT_DSL:
-            return dict_mmap_open(path, cancel_flag, expected_generation);
+            dict = dict_mmap_open(path, cancel_flag, expected_generation);
+            break;
 
         case DICT_FORMAT_STARDICT:
-            return parse_stardict(path, cancel_flag, expected_generation);
+            dict = parse_stardict(path, cancel_flag, expected_generation);
+            break;
 
         case DICT_FORMAT_MDX:
-            return parse_mdx_file(path, cancel_flag, expected_generation);
+            dict = parse_mdx_file(path, cancel_flag, expected_generation);
+            break;
 
         case DICT_FORMAT_BGL:
-            return parse_bgl_file(path, cancel_flag, expected_generation);
+            dict = parse_bgl_file(path, cancel_flag, expected_generation);
+            break;
         case DICT_FORMAT_SLOB:
-            return parse_slob_file(path, cancel_flag, expected_generation);
+            dict = parse_slob_file(path, cancel_flag, expected_generation);
+            break;
 
         default:
-            return NULL;
+            dict = NULL;
+            break;
     }
+
+    if (dict && !dict->icon_path) {
+        const char *img_exts[] = {".png", ".ico", ".jpg", ".jpeg", ".bmp", NULL};
+        char *base_no_ext = g_strdup(path);
+        char *dot = strrchr(base_no_ext, '.');
+        if (dot) *dot = '\0';
+        
+        for (int i = 0; img_exts[i]; i++) {
+            char *icon_candidate = g_strconcat(base_no_ext, img_exts[i], NULL);
+            if (g_file_test(icon_candidate, G_FILE_TEST_EXISTS)) {
+                dict->icon_path = icon_candidate;
+                break;
+            }
+            g_free(icon_candidate);
+        }
+        g_free(base_no_ext);
+    }
+
+    return dict;
 }
+
 
 /* ── directory scanner ───────────────────────────────────── */
 
@@ -240,6 +267,9 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
         free(full);
         entry->format = fmt;
         entry->dict = loaded;
+        if (loaded->icon_path) {
+            entry->icon_path = strdup(loaded->icon_path);
+        }
 
         if (callback) {
             callback(entry, DICT_LOADER_EVENT_FINISHED, user_data);
@@ -279,6 +309,7 @@ void dict_loader_free(DictEntry *head) {
         free(head->name);
         free(head->path);
         free(head->guessed_lang_group);
+        free(head->icon_path);
         free(head);
         head = next;
     }

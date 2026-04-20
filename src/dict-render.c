@@ -2417,11 +2417,13 @@ char* dsl_render_to_html(const char *dsl_text,
                 if (strcmp(tag_name, "a") == 0 || strcmp(tag_name, "area") == 0) {
                     /* Link tags - check if it's an audio link */
                     if (strstr(tag, "sound://")) {
-                        char *processed_tag = process_html_tag_attribute(tag, "href", resource_dir, source_dir, dark_mode);
+                        char *no_class = remove_html_attribute(tag, "class");
+                        char *processed_tag = process_html_tag_attribute(no_class, "href", resource_dir, source_dir, dark_mode);
                         const char *close_anchor = g_strstr_len(dsl_text + head + tag_len, length - head - tag_len, "</a>");
                         buf_append_str(&b, processed_tag);
                         buf_append_str(&b, "🔊</a>");
                         g_free(processed_tag);
+                        g_free(no_class);
                         g_free(tag);
 
                         if (close_anchor) {

@@ -728,6 +728,7 @@ void dict_mmap_close(DictMmap *dict) {
         if (dict->mdx_stylesheet) free(dict->mdx_stylesheet);
         if (dict->source_lang) free(dict->source_lang);
         if (dict->target_lang) free(dict->target_lang);
+        if (dict->icon_path) free(dict->icon_path);
         free(dict);
     }
 }

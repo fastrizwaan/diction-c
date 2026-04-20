@@ -857,7 +857,7 @@ static char *mdx_prepare_resource_dir(const char *path, int is_v2, int num_size,
     g_mkdir_with_parents(resource_dir, 0755);
 
     if (out_reader) {
-        *out_reader = mdx_open_mdd_reader(mdd_paths, resource_dir, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected);
+        *out_reader = mdx_open_mdd_reader(mdd_paths, mdx_dir, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected);
     }
 
     g_ptr_array_free(mdd_paths, TRUE);
@@ -899,82 +899,84 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
         header_text_size = ru32be(buf4);
         if (header_text_size <= 10*1024*1024) {
             unsigned char *header_raw = malloc(header_text_size);
-            fread(header_raw, 1, header_text_size, fh);
+            if (header_raw && fread(header_raw, 1, header_text_size, fh) == header_text_size) {
+                char *utf8_hdr = NULL;
+                /* Try UTF-16LE first as it's common for v2.0+ */
+                GError *err = NULL;
+                utf8_hdr = g_convert((const char*)header_raw, header_text_size, "UTF-8", "UTF-16LE", NULL, NULL, &err);
+                if (!utf8_hdr || !strstr(utf8_hdr, "Encoding=")) {
+                    if (err) { g_error_free(err); err = NULL; }
+                    g_free(utf8_hdr);
+                    /* Fallback to UTF-8/Latined headers */
+                    if (g_utf8_validate((const char*)header_raw, header_text_size, NULL)) {
+                        utf8_hdr = g_strndup((const char*)header_raw, header_text_size);
+                    } else {
+                        utf8_hdr = g_convert((const char*)header_raw, header_text_size, "UTF-8", "ISO-8859-1", NULL, NULL, &err);
+                    }
+                }
+                if (err) g_error_free(err);
 
-            size_t ascii_len = header_text_size / 2;
-            char *ascii_hdr = malloc(ascii_len + 1);
-                for (size_t i = 0; i < ascii_len; i++)
-                    ascii_hdr[i] = header_raw[i * 2];
-                ascii_hdr[ascii_len] = '\0';
-
-                const char *tp = strstr(ascii_hdr, "Title=\"");
-                if (tp) {
-                    const char *ts = tp + 7;
-                    const char *te = strchr(ts, '"');
-                    if (te && (te - ts) > 0) {
-                        char *raw_title = strndup(ts, te - ts);
-                        char *unescaped = unescape_xml_entities(raw_title);
-                        char *validated = validate_utf8_string(unescaped);
-                        char *stripped = strip_html_tags(validated);
-                        /* Skip placeholder/invalid titles */
-                        if (strcmp(stripped, "Title (No HTML code allowed)") != 0 && 
-                            strlen(stripped) > 0) {
+                if (utf8_hdr) {
+                    title = extract_header_attribute(utf8_hdr, "Title");
+                    if (title) {
+                        char *stripped = strip_html_tags(title);
+                        g_free(title);
+                        if (stripped && (strcmp(stripped, "Title (No HTML code allowed)") == 0 || strlen(stripped) == 0)) {
+                            g_free(stripped);
+                            title = NULL;
+                        } else {
                             title = stripped;
                             fprintf(stderr, "[MDX DEBUG] Title: '%s'\n", title);
-                        } else {
-                            g_free(stripped);
-                            fprintf(stderr, "[MDX DEBUG] Skipped placeholder title\n");
                         }
-                        g_free(validated);
-                        g_free(unescaped);
-                        free(raw_title);
                     }
-                }
 
-                char *vp = strstr(ascii_hdr, "GeneratedByEngineVersion=\"");
-                if (vp) {
-                    const char *vptr = strchr(vp, '\"');
-                    if (vptr) {
-                        double ver = atof(vptr + 1);
+                    char *v_ver = extract_header_attribute(utf8_hdr, "GeneratedByEngineVersion");
+                    if (v_ver) {
+                        double ver = atof(v_ver);
                         is_v2 = (ver >= 2.0);
                         num_size = is_v2 ? 8 : 4;
+                        g_free(v_ver);
                     }
-                }
 
-                char *enc_raw = extract_header_attribute(ascii_hdr, "Encoding");
-                if (enc_raw && strlen(enc_raw) > 0) {
-                    if (g_ascii_strcasecmp(enc_raw, "UTF-16") == 0 || g_ascii_strcasecmp(enc_raw, "UTF16") == 0) {
-                        encoding_is_utf16 = 1;
-                    } else if (g_ascii_strcasecmp(enc_raw, "UTF-8") == 0 || g_ascii_strcasecmp(enc_raw, "UTF8") == 0) {
-                        encoding_is_utf16 = 0;
-                    } else {
-                        dict_encoding = g_strdup(enc_raw);
-                        encoding_is_utf16 = 0;
+                    char *enc_raw = extract_header_attribute(utf8_hdr, "Encoding");
+                    if (enc_raw && strlen(enc_raw) > 0) {
+                        if (g_ascii_strcasecmp(enc_raw, "UTF-16") == 0 || g_ascii_strcasecmp(enc_raw, "UTF16") == 0) {
+                            encoding_is_utf16 = 1;
+                        } else if (g_ascii_strcasecmp(enc_raw, "UTF-8") == 0 || g_ascii_strcasecmp(enc_raw, "UTF8") == 0) {
+                            encoding_is_utf16 = 0;
+                        } else {
+                            dict_encoding = g_strdup(enc_raw);
+                            encoding_is_utf16 = 0;
+                        }
                     }
+                    g_free(enc_raw);
+
+                    char *xp = extract_header_attribute(utf8_hdr, "Encrypted");
+                    if (xp) {
+                        encrypted = atoi(xp);
+                        g_free(xp);
+                    }
+
+                    stylesheet = extract_header_attribute(utf8_hdr, "StyleSheet");
+                    
+                    char *raw_s_lang = extract_header_attribute(utf8_hdr, "SourceLanguage");
+                    char *raw_t_lang = extract_header_attribute(utf8_hdr, "TargetLanguage");
+                    s_lang = langpair_normalize_language_name(raw_s_lang);
+                    t_lang = langpair_normalize_language_name(raw_t_lang);
+                    g_free(raw_s_lang);
+                    g_free(raw_t_lang);
+                    if (!s_lang && t_lang) {
+                        s_lang = g_strdup(t_lang);
+                    } else if (!t_lang && s_lang) {
+                        t_lang = g_strdup(s_lang);
+                    }
+
+                    g_free(utf8_hdr);
                 }
-                g_free(enc_raw);
-
-                char *xp = strstr(ascii_hdr, "Encrypted=\"");
-                if (xp) encrypted = atoi(xp + 11);
-
-                stylesheet = extract_header_attribute(ascii_hdr, "StyleSheet");
-                
-                char *raw_s_lang = extract_header_attribute(ascii_hdr, "SourceLanguage");
-                char *raw_t_lang = extract_header_attribute(ascii_hdr, "TargetLanguage");
-                s_lang = langpair_normalize_language_name(raw_s_lang);
-                t_lang = langpair_normalize_language_name(raw_t_lang);
-                g_free(raw_s_lang);
-                g_free(raw_t_lang);
-                if (!s_lang && t_lang) {
-                    s_lang = g_strdup(t_lang);
-                } else if (!t_lang && s_lang) {
-                    t_lang = g_strdup(s_lang);
-                }
-
-                free(ascii_hdr);
                 free(header_raw);
             }
         }
+    }
 
     /* ───────────────────────────── */
     /* FAST PATH: use cache directly */
@@ -1305,6 +1307,19 @@ rebuild_cache:
     g_free(cache_path);
 
     dict->resource_dir = mdx_prepare_resource_dir(path, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected, &dict->resource_reader);
+    
+    /* Internal MDD icon extraction: check for common icon names in resources */
+    if (dict->resource_reader) {
+        const char *icon_names[] = {"icon.png", "icon.ico", "icon.jpg", "icon.bmp", "/icon.png", "/icon.ico", "logo.png", NULL};
+        for (int i = 0; icon_names[i]; i++) {
+            if (resource_reader_has(dict->resource_reader, icon_names[i])) {
+                dict->icon_path = resource_reader_get(dict->resource_reader, icon_names[i]);
+                if (dict->icon_path) break;
+            }
+        }
+    }
 
     return dict;
 }
+
+
