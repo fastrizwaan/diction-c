@@ -6,6 +6,8 @@
 #include <glib/gstdio.h>
 #include <webkit/webkit.h>
 #include <pango/pangocairo.h>
+#include <adwaita.h>
+#include "json-theme.h"
 
 /* Normalize path strings used as keys in the scanning UI. This ensures the
  * same canonical form is used when creating rows and when progress updates
@@ -1534,12 +1536,12 @@ static void on_theme_row_changed(AdwComboRow *r, GParamSpec *p, SettingsDialogDa
 
 static void on_color_theme_row_changed(AdwComboRow *row, GParamSpec *pspec, SettingsDialogData *data) {
     (void)pspec;
-    const char *themes[] = {"default", "solarized", "dracula", "nord", "gruvbox", "monokai", "material", "ocean", "forest", "sepia"};
     guint idx = adw_combo_row_get_selected(row);
-    if (idx >= G_N_ELEMENTS(themes)) return;
+    GPtrArray *all_names = g_object_get_data(G_OBJECT(row), "theme-names-array");
+    if (!all_names || idx >= all_names->len) return;
     
     g_free(data->settings->color_theme);
-    data->settings->color_theme = g_strdup(themes[idx]);
+    data->settings->color_theme = g_strdup(g_ptr_array_index(all_names, idx));
     settings_save(data->settings);
     
     /* Trigger refresh of results to see new theme */
@@ -1706,15 +1708,38 @@ GtkWidget* settings_dialog_new(GtkWindow *parent, AppSettings *settings,
 
     AdwComboRow *color_theme_row = ADW_COMBO_ROW(adw_combo_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(color_theme_row), "Color Preset");
-    GtkStringList *color_model = gtk_string_list_new((const char *[]){
-        "Default", "Solarized", "Dracula", "Nord", "Gruvbox", "Monokai", "Material", "Ocean", "Forest", "Sepia", NULL});
+
+    GtkStringList *color_model = gtk_string_list_new(NULL);
+    const char *hardcoded_titles[] = {"Default", "Solarized", "Dracula", "Nord", "Gruvbox", "Monokai", "Material", "Ocean", "Forest", "Sepia"};
+    const char *hardcoded_names[] = {"default", "solarized", "dracula", "nord", "gruvbox", "monokai", "material", "ocean", "forest", "sepia"};
+    int n_hardcoded = 10;
+    
+    GPtrArray *all_theme_names = g_ptr_array_new_with_free_func(g_free);
+    for (int i=0; i<n_hardcoded; i++) {
+        gtk_string_list_append(color_model, hardcoded_titles[i]);
+        g_ptr_array_add(all_theme_names, g_strdup(hardcoded_names[i]));
+    }
+    
+    json_theme_manager_init();
+    int n_json_themes = json_theme_get_count();
+    for (int i=0; i<n_json_themes; i++) {
+        const char *name = json_theme_get_name(i);
+        char *title = g_strdup_printf("%s (Custom)", name);
+        gtk_string_list_append(color_model, title);
+        g_free(title);
+        g_ptr_array_add(all_theme_names, g_strdup(name));
+    }
+
     adw_combo_row_set_model(color_theme_row, G_LIST_MODEL(color_model));
+    g_object_set_data_full(G_OBJECT(color_theme_row), "theme-names-array", all_theme_names, (GDestroyNotify)g_ptr_array_unref);
     g_object_unref(color_model);
 
-    const char *themes[] = {"default", "solarized", "dracula", "nord", "gruvbox", "monokai", "material", "ocean", "forest", "sepia"};
     int color_idx = 0;
-    for (int i=0; i<10; i++) {
-        if (g_strcmp0(settings->color_theme, themes[i]) == 0) { color_idx = i; break; }
+    for (guint i=0; i<all_theme_names->len; i++) {
+        if (g_strcmp0(settings->color_theme, g_ptr_array_index(all_theme_names, i)) == 0) { 
+            color_idx = i; 
+            break; 
+        }
     }
     adw_combo_row_set_selected(color_theme_row, color_idx);
     g_signal_connect(color_theme_row, "notify::selected", G_CALLBACK(on_color_theme_row_changed), data);

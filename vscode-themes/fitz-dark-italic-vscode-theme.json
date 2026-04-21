@@ -1,0 +1,2299 @@
+{
+	"$schema": "vscode://schemas/color-theme",
+	"name": "Fitz Dark Italic Syntax",
+	"type": "dark",
+
+	// for Editor theme
+	"colors": {
+		// To test in your workspace, paste the 'colors' rules into the JSON property below and paste all into 'Workspace Settings'.
+		// "workbench.colorCustomizations": {
+		// 		<paste rules here>
+		// },
+
+		// CONTRAST COLORS //
+
+		// an extra border around active elements to separate them from others for greater contrast
+		"contrastActiveBorder": "#e1e1e100",
+		// an extra border around elements to separate them from others for greater contrast
+		"contrastBorder": "#e1e1e100",
+
+
+		// BASE COLORS //
+
+		// overall border color for focused elements. This color is only used if not overridden by a component
+		"focusBorder": "#00ffff99",
+		// overall foreground color. This color is only used if not overridden by a component
+		"foreground": "#c3c3c3",
+		// shadow color of widgets such as Find/Replace inside the editor
+		"widget.shadow": "#80beff99",
+		// background color of text selections in the workbench (for input fields or text areas, does not apply to selections within the editor and the terminal)
+		"selection.background": "#c3c3c399",
+		// foreground color for description text providing additional information, for example for a label
+		"descriptionForeground": "#c3c3c3",
+		// overall foreground color for error messages (this color is only used if not overridden by a component)
+		"errorForeground": "#ff0000cc",
+
+
+		// TEXT COLORS //
+
+		// background color for block quotes in text
+		"textBlockQuote.background": "#3c3c3c99",
+		// border color for block quotes in text.
+		"textBlockQuote.border": "#ffb3ff",
+		// background color for code blocks in text
+		"textCodeBlock.background": "#1e1e1e",
+		// foreground color for links in text when clicked on and on mouse hover
+		"textLink.activeForeground": "#ffb3ff",
+		// foreground color for links in text
+		"textLink.foreground": "#877fff",
+		// foreground color for preformatted text segments.
+		"textPreformat.foreground": "#80beff",
+		// color for text separators
+		"textSeparator.foreground": "#3c3c3c",
+
+
+		// BUTTON CONTROL //
+
+		// button background color
+		"button.background": "#80beff",
+		// button foreground color
+		"button.foreground": "#000000",
+		// button background color when hovering
+		"button.hoverBackground": "#ffb3ff",
+
+
+		// DROPDOWN CONTROL //
+
+		// dropdown background
+		"dropdown.background": "#3c3c3c",
+		// dropdown list background
+		"dropdown.listBackground": "#1e1e1e",
+		// dropdown border
+		"dropdown.border": "#ffb3ffcc",
+		// dropdown foreground
+		"dropdown.foreground": "#00ffff",
+
+
+		// INPUT //
+
+		// input box background
+		"input.background": "#3c3c3c",
+		// input box border.
+		"input.border": "#877fff99",
+		// input box foreground.
+		"input.foreground": "#fcf270",
+		// input box foreground color for placeholder text
+		"input.placeholderForeground": "#fcf27099",
+		// border color of activated options in input fields
+		"inputOption.activeBorder": "#80beffcc",
+		// input validation background color for error severity
+		"inputValidation.errorBackground": "#1e1e1e",
+		// input validation border color for error severity
+		"inputValidation.errorBorder": "#ff0000cc",
+		// input validation background color for information severity
+		"inputValidation.infoBackground": "#1e1e1e",
+		// input validation border color for information severity
+		"inputValidation.infoBorder": "#00ff00cc",
+		// input validation background color for information warning
+		"inputValidation.warningBackground": "#1e1e1e",
+		// input validation border color for warning severity
+		"inputValidation.warningBorder": "#ffa500cc",
+
+
+		// SCROLLBAR //
+
+		// scrollbar slider shadow to indicate that the view is scrolled
+		"scrollbar.shadow": "#80beffcc",
+		// scrollbar slider background color when clicked on
+		"scrollbarSlider.activeBackground": "#9cff4ccc",
+		// scrollbar slider background color
+		"scrollbarSlider.background": "#9cff4c66",
+		// scrollbar slider background color when hovering
+		"scrollbarSlider.hoverBackground": "#9cff4c99",
+
+
+		// BADGE //
+
+		// badge background color.
+		"badge.background": "#ffb3ff",
+		// badge foreground color.
+		"badge.foreground": "#000000",
+
+
+		// PROGRESS BAR //
+
+		// background color of the progress bar shown for long running operations
+		"progressBar.background": "#80beff",
+
+
+		// LISTS AND TREES //
+
+		// list/tree background color for the selected item when the list/tree is active
+		"list.activeSelectionBackground": "#3c3c3c",
+		// list/tree foreground color for the selected item when the list/tree is active
+		"list.activeSelectionForeground": "#ffb3ff",
+		// list/tree drag and drop background when moving items around using the mouse
+		"list.dropBackground": "#3c3c3c",
+		// list/tree background color for the focused item when the list/tree is active
+		"list.focusBackground": "#3c3c3c",
+		// list/tree foreground color for the focused item when the list/tree is active. An active list/tree has keyboard focus, an inactive does not
+		"list.focusForeground": "#ffb3ff",
+		// list/tree foreground color of the match highlights when searching inside the list/tree
+		"list.highlightForeground": "#80beff",
+		// list/tree background when hovering over items using the mouse
+		"list.hoverBackground": "#3c3c3c99",
+		// list/tree foreground when hovering over items using the mouse.
+		"list.hoverForeground": "#877fff",
+		// list/tree background color for the selected item when the list/tree is inactive
+		"list.inactiveSelectionBackground": "#3c3c3c",
+		// list/tree foreground color for the selected item when the list/tree is inactive. An active list/tree has keyboard focus, an inactive does not
+		"list.inactiveSelectionForeground": "#ffb3ff",
+		// list background color for the focused item when the list is inactive. An active list has keyboard focus, an inactive does not. Currently only supported in lists
+		"list.inactiveFocusBackground": "#ffb3ff",
+		// list/tree foreground color for invalid items, for example an unresolved root in explorer
+		"list.invalidItemForeground": "#ff0000",
+		//foreground color of list items containing errors
+		"list.errorForeground": "#ff0000cc",
+		// foreground color of list items containing warnings
+		"list.warningForeground": "#ffa500cc",
+
+
+		// ACTIVITY BAR //
+
+		// activity Bar background color
+		"activityBar.background": "#3c3c3c",
+		// activity bar border color with the side bar
+		"activityBar.border": "#877fff99",
+		// drag and drop feedback color for the activity bar items
+		"activityBar.dropBackground": "#3c3c3c",
+		// activity bar foreground color (for example used for the icons)
+		"activityBar.foreground": "#00ffffcc",
+		// activity notification badge background color
+		"activityBarBadge.background": "#ffb3ff",
+		// activity notification badge foreground color
+		"activityBarBadge.foreground": "#000000",
+
+
+		// SIDEBAR //
+
+		// side bar background color
+		"sideBar.background": "#1e1e1e",
+		// side bar foreground color. The Side Bar is the container for views like Explorer and Search
+		"sideBar.foreground": "#c3c3c3",
+		// side bar border color on the side separating the editor
+		"sideBar.border": "#877fff99",
+		// drag and drop feedback color for the side bar sections. The color should have transparency so that the side bar sections can still shine through. The side bar is the container for views like explorer and search
+		"sideBar.dropBackground": "#555555",
+		// side bar title foreground color
+		"sideBarTitle.foreground": "#877fff",
+		// side Bar section header background color
+		"sideBarSectionHeader.background": "#1e1e1e",
+		// side bar section header foreground color
+		"sideBarSectionHeader.foreground": "#ffb3ff",
+
+
+		// EDITOR GROUPS //
+
+		// background color of an empty editor group
+		"editorGroup.emptyBackground": "#55555599",
+		// border color of an empty editor group that is focused
+		"editorGroup.focusedEmptyBorder": "#877fff88",
+		// background color of the editor pane visible on the left and right side of the centered editor layout
+		"editorPane.background": "#3c3c3c",
+		// background color of an editor group. The background color shows up when dragging editor groups around
+		// "editorGroup.background": "#555555",
+		// color to separate multiple editor groups from each other
+		"editorGroup.border": "#877fff99",
+		// background color when dragging editors around
+		"editorGroup.dropBackground": "#55555599",
+		// background color of the editor group title header when Tabs are disabled (set "workbench.editor.showTabs": false)
+		"editorGroupHeader.noTabsBackground": "#1e1e1e",
+		// background color of the Tabs container
+		"editorGroupHeader.tabsBackground": "#1e1e1e",
+		// border color of the editor group title header when tabs are enabled
+		"editorGroupHeader.tabsBorder": "#80beff99",
+
+
+		// EDITOR TABS //
+
+		// active tab background color
+		"tab.activeBackground": "#1e1e1e",
+		// active tab foreground color in an active group
+		"tab.activeForeground": "#ffb3ff",
+		// border to separate tabs from each other.
+		"tab.border": "#877fff99",
+		// bottom border for the active tab
+		"tab.activeBorder": "#9cff4c",
+		// bottom border for the active tab in an inactive editor group
+		"tab.unfocusedActiveBorder": "#9cff4c99",
+		// inactive Tab background color.
+		"tab.inactiveBackground": "#3c3c3c",
+		// inactive Tab foreground color in an active group
+		"tab.inactiveForeground": "#c3c3c3",
+		// active tab foreground color in an inactive editor group
+		"tab.unfocusedActiveForeground": "#877fff",
+		// inactive tab foreground color in an inactive editor group
+		"tab.unfocusedInactiveForeground": "#c3c3c3",
+		// tab background color when hovering
+		"tab.hoverBackground":"#555555",
+		// tab background color in an unfocused group when hovering
+		"tab.unfocusedHoverBackground":"#555555",
+		// border to highlight tabs when hovering
+		"tab.hoverBorder":"#ffb3ff",
+		// border to highlight tabs in an unfocused group when hovering
+		"tab.unfocusedHoverBorder":"#877fff",
+
+
+		// EDITOR COLORS //
+
+		// editor background color.
+		"editor.background": "#1e1e1e",
+		// editor default foreground color
+		"editor.foreground": "#e1e1e1",
+		// color of editor line numbers
+		"editorLineNumber.foreground": "#00ffff",
+		// color of the active editor line number
+		"editorLineNumber.activeForeground": "#ffb3ff",
+		// the background color of the editor cursor. Allows customizing the color of a character overlapped by a block cursor
+		"editorCursor.background": "#9cff4c",
+		// color of the editor cursor
+		"editorCursor.foreground": "#9cff4c",
+
+		// Selection
+
+		// This is the standard Select colour
+		"editor.selectionBackground": "#e1e1e133",
+		// color of the selected text for high contrast
+		"editor.selectionForeground": "#ffb3ff",
+		// color of the selection in an inactive editor. The color must not be opaque to not hide underlying decorations
+		"editor.inactiveSelectionBackground": "#1e1e1e33",
+		// color for regions with the same content as the selection. The color must not be opaque to not hide underlying decorations
+		"editor.selectionHighlightBackground": "#ffb3ff00",
+		// border color for regions with the same content as the selection
+		"editor.selectionHighlightBorder": "#ffb3ff99",
+
+		// Word Highlight
+
+		// background color of a symbol during read-access, for example when reading a variable. The color must not be opaque to not hide underlying decorations
+		"editor.wordHighlightBackground": "#80beff00",
+		// border color of a symbol during read-access, for example when reading a variable
+		"editor.wordHighlightBorder": "#80beff99",
+		// background color of a symbol during write-access, for example when writing to a variable. The color must not be opaque to not hide underlying decorations
+		"editor.wordHighlightStrongBackground": "#fcf27000",
+		// border color of a symbol during write-access, for example when writing to a variable
+		"editor.wordHighlightStrongBorder": "#fcf270cc",
+
+		// Find
+
+		// color of the current search match
+		"editor.findMatchBackground": "#9cff4c00",
+		// color of the other search matches. The color must not be opaque to not hide underlying decorations
+		"editor.findMatchHighlightBackground": "#9cff4c00",
+		// color the range limiting the search (Enable 'Find in Selection' in the find widget). The color must not be opaque to not hide underlying decorations
+		"editor.findRangeHighlightBackground": "#e1e1e133",
+		// border color of the current search match
+		"editor.findMatchBorder": "#9cff4ccc",
+		// border color of the other search matches
+		"editor.findMatchHighlightBorder": "#9cff4c99",
+		// border color the range limiting the search (Enable 'Find in Selection' in the find widget)
+		"editor.findRangeHighlightBorder": "#e1e1e100",
+
+		// Hover
+
+		// highlight below the word for which a hover is shown. The color must not be opaque to not hide underlying decorations
+		"editor.hoverHighlightBackground": "#e1e1e133",
+
+		// Line Highlight
+
+		// background color for the highlight of line at the cursor position
+		"editor.lineHighlightBackground": "#9cff4c33",
+		// background color for the border around the line at the cursor position
+		"editor.lineHighlightBorder": "#877fff99",
+
+		// Link
+
+		// color of active links
+		"editorLink.activeForeground": "#c3c3c3",
+
+		// Range Highlight
+
+		// background color of highlighted ranges, used by Quick Open, Symbol in File and Find features. The color must not be opaque to not hide underlying decorations
+		"editor.rangeHighlightBackground": "#00ffff33",
+		// background color of the border around highlighted ranges
+		"editor.rangeHighlightBorder": "#00ffff99",
+
+		// Whitespace
+
+		// color of whitespace characters in the editor
+		"editorWhitespace.foreground": "#e1e1e166",
+
+		// Indent Guides
+
+		// color of the editor indentation guides
+		"editorIndentGuide.background": "#3c3c3c99",
+		// color of the active editor indentation guide
+		"editorIndentGuide.activeBackground": "#ffb3ff99",
+
+		// Rulers
+
+		// color of the editor rulers
+		"editorRuler.foreground": "#877fff99",
+
+		// Code Lense
+
+		// foreground color of an editor CodeLens
+		"editorCodeLens.foreground": "#c3c3c3cc",
+
+		// Bracket Matches
+
+		// background color behind matching brackets
+		"editorBracketMatch.background": "#3c3c3c",
+		// color for matching brackets boxes
+		"editorBracketMatch.border": "#fcf27099",
+
+		// Overview Ruler
+
+		// color of the overview ruler border
+		"editorOverviewRuler.border": "#877fff99",
+		// overview ruler marker color for find matches. The color must not be opaque to not hide underlying decorations
+		"editorOverviewRuler.findMatchForeground": "#9cff4c99",
+		// overview ruler marker color for highlighted ranges, like by the Quick Open, Symbol in File and Find features. The color must not be opaque to not hide underlying decorations
+		"editorOverviewRuler.rangeHighlightForeground": "#00ffff99",
+		// overview ruler marker color for selection highlights. The color must not be opaque to not hide underlying decorations
+		"editorOverviewRuler.selectionHighlightForeground": "#ffb3ff99",
+		// overview ruler marker color for symbol highlights. The color must not be opaque to not hide underlying decorations
+		"editorOverviewRuler.wordHighlightForeground": "#80beff99",
+		// overview ruler marker color for write-access symbol highlights. The color must not be opaque to not hide underlying decorations
+		"editorOverviewRuler.wordHighlightStrongForeground": "#fcf27099",
+		// overview ruler marker color for modified content,
+		"editorOverviewRuler.modifiedForeground": "#ffa50099",
+		// overview ruler marker color for added content
+		"editorOverviewRuler.addedForeground": "#00ff0099",
+		// overview ruler marker color for deleted content
+		"editorOverviewRuler.deletedForeground": "#ff000099",
+		// overview ruler marker color for errors
+		"editorOverviewRuler.errorForeground": "#ff0000cc",
+		// overview ruler marker color for warnings
+		"editorOverviewRuler.warningForeground": "#ffa500cc",
+		// overview ruler marker color for infos
+		"editorOverviewRuler.infoForeground": "#00ff00cc",
+		// overview ruler marker color for matching brackets
+		"editorOverviewRuler.bracketMatchForeground": "#877fff99",
+
+		// Errors and Warnings
+
+		// foreground color of error squiggles in the editor
+		"editorError.foreground": "#ff0000cc",
+		// border color of error squiggles in the editor
+		"editorError.border": "#ff000000",
+		// foreground color of warning squiggles in the editor
+		"editorWarning.foreground": "#ffa500cc",
+		// border color of warning squiggles in the editor
+		"editorWarning.border": "#ffa50000",
+		// foreground color of info squiggles in the editor
+		"editorInfo.foreground": "#00ff00cc",
+		// border color of info squiggles in the editor
+		"editorInfo.border": "#00ff0000",
+		// foreground color of hints in the editor
+		"editorHint.foreground": "#fcf270",
+		// border color of hints in the editor
+		"editorHint.border": "#fcf27000",
+
+		// Gutter
+
+		// background color of the editor gutter. The gutter contains the glyph margins and the line numbers
+		"editorGutter.background": "#3c3c3c99",
+		// editor gutter background color for lines that are modified,
+		"editorGutter.modifiedBackground": "#ffa500cc",
+		// editor gutter background color for lines that are added
+		"editorGutter.addedBackground": "#00ff00cc",
+		// editor gutter background color for lines that are deleted
+		"editorGutter.deletedBackground": "#ff0000cc",
+
+
+		// DIFF EDITOR COLORS //
+
+		// background color for text that got inserted. The color must not be opaque to not hide underlying decorations
+		"diffEditor.insertedTextBackground": "#00ff0022",
+		// outline color for the text that got inserted
+		"diffEditor.insertedTextBorder": "#00ff0000",
+		// background color for text that got removed. The color must not be opaque to not hide underlying decorations
+		"diffEditor.removedTextBackground": "#ff000022",
+		// outline color for text that got removed
+		"diffEditor.removedTextBorder": "#ff000000",
+
+
+		// EDITOR WIDGET COLORS //
+
+		// background color of editor widgets, such as Find/Replace
+		"editorWidget.background": "#3c3c3ccc",
+		// border color of the editor widget unless the widget does not contain a border or defines its own border color
+		"editorWidget.border": "#ffb3ffcc",
+		// background color of the suggestion widget
+		"editorSuggestWidget.background": "#3c3c3ccc",
+		// border color of the suggestion widget
+		"editorSuggestWidget.border": "#ffb3ffcc",
+		// foreground color of the suggestion widget
+		"editorSuggestWidget.foreground": "#c3c3c3",
+		// color of the match highlights in the suggestion widget
+		"editorSuggestWidget.highlightForeground": "#877fff",
+		// background color of the selected entry in the suggestion widget
+		"editorSuggestWidget.selectedBackground": "#1e1e1ecc",
+		// background color of the editor hover
+		"editorHoverWidget.background": "#3c3c3ccc",
+		// border color of the editor hover
+		"editorHoverWidget.border": "#ffb3ffcc",
+
+		// Debug Exception
+
+		// exception widget background color
+		"debugExceptionWidget.background": "#3c3c3ccc",
+		// exception widget border color
+		"debugExceptionWidget.border": "#ff000099",
+
+		// Editor Marker
+
+		// editor marker navigation widget background
+		"editorMarkerNavigation.background": "#3c3c3ccc",
+		// editor marker navigation widget error color
+		"editorMarkerNavigationError.background": "#ff000099",
+		// editor marker navigation widget warning color
+		"editorMarkerNavigationWarning.background": "#ffa50099",
+		// editor marker navigation widget info color
+		"editorMarkerNavigationInfo.background": "#00ff0099",
+
+
+		// PEEK VIEW COLORS //
+
+		// color of the peek view borders and arrow
+		"peekView.border": "#80beff99",
+		// background color of the peek view editor
+		"peekViewEditor.background": "#3c3c3c99",
+		// background color of the gutter in the peek view editor
+		"peekViewEditorGutter.background": "#1e1e1e",
+		// match highlight color in the peek view editor
+		"peekViewEditor.matchHighlightBackground": "#ffb3ff00",
+		// match highlight border color in the peek view editor
+		"peekViewEditor.matchHighlightBorder": "#ffb3ff99",
+		// background color of the peek view result list
+		"peekViewResult.background": "#3c3c3c",
+		// foreground color for file nodes in the peek view result list
+		"peekViewResult.fileForeground": "#c3c3c3",
+		// foreground color for line nodes in the peek view result list
+		"peekViewResult.lineForeground": "#c3c3c3",
+		// match highlight color in the peek view result list
+		"peekViewResult.matchHighlightBackground": "#ffb3ff66",
+		// background color of the selected entry in the peek view result list
+		"peekViewResult.selectionBackground": "#1e1e1e66",
+		// foreground color of the selected entry in the peek view result list
+		"peekViewResult.selectionForeground": "#80beff",
+		// background color of the peek view title area
+		"peekViewTitle.background": "#3c3c3c",
+		// color of the peek view title info
+		"peekViewTitleDescription.foreground": "#c3c3c3",
+		// color of the peek view title
+		"peekViewTitleLabel.foreground": "#fcf270",
+
+
+		// MERGE CONFLICTS //
+
+		// current header background in inline merge conflicts. The color must not be opaque to not hide underlying decorations
+		"merge.currentHeaderBackground": "#28a22866",
+		// current content background in inline merge conflicts. The color must not be opaque to not hide underlying decorations
+		"merge.currentContentBackground": "#28a22833",
+		// incoming header background in inline merge conflicts. The color must not be opaque to not hide underlying decorations
+		"merge.incomingHeaderBackground": "#0047ff66",
+		// incoming content background in inline merge conflicts. The color must not be opaque to not hide underlying decorations
+		"merge.incomingContentBackground": "#0047ff33",
+		// common ancestor header background in inline merge-conflicts. The color must not be opaque to not hide underlying decorations
+		"merge.commonHeaderBackground": "#f9690e66",
+		// common ancestor content background in inline merge-conflicts. The color must not be opaque to not hide underlying decorations
+		"merge.commonContentBackground": "#f9690e33",
+		// border color on headers and the splitter in inline merge conflicts
+		"merge.border": "#e1e1e100",
+		// current overview ruler foreground for inline merge conflicts
+		"editorOverviewRuler.currentContentForeground": "#28a228cc",
+		// incoming overview ruler foreground for inline merge conflicts
+		"editorOverviewRuler.incomingContentForeground": "#0047ffcc",
+		// common ancestor overview ruler foreground for inline merge conflicts
+		"editorOverviewRuler.commonContentForeground": "#f9690ecc",
+
+
+		// PANEL COLORS //
+
+		// panel background color
+		"panel.background": "#3c3c3c",
+		// panel border color to separate the panel from the editor
+		"panel.border": "#80beff99",
+		// drag and drop feedback color for the panel title items. The color should have transparency so that the panel entries can still shine through
+		"panel.dropBackground": "#555555",
+		// border color for the active panel title
+		"panelTitle.activeBorder": "#80beff",
+		// title color for the active panel
+		"panelTitle.activeForeground": "#80beff",
+		// title color for the inactive panel
+		"panelTitle.inactiveForeground": "#c3c3c3",
+
+
+		// STATUS BAR COLORS //
+
+		// standard Status Bar background color
+		"statusBar.background": "#3c3c3c",
+		// status Bar foreground color
+		"statusBar.foreground": "#80beff",
+		// status Bar border color separating the Status Bar and editor
+		"statusBar.border": "#80beff99",
+		// status Bar background color when a program is being debugged
+		"statusBar.debuggingBackground": "#3c3c3c",
+		// status Bar foreground color when a program is being debugged
+		"statusBar.debuggingForeground": "#ffb3ff",
+		// status Bar border color separating the Status Bar and editor when a program is being debugged
+		"statusBar.debuggingBorder": "#80beff99",
+		// status Bar foreground color when no folder is opened
+		"statusBar.noFolderForeground": "#c3c3c3",
+		// status Bar background color when no folder is opened
+		"statusBar.noFolderBackground": "#3c3c3c",
+		// status Bar border color separating the Status Bar and editor when no folder is opened
+		"statusBar.noFolderBorder": "#80beff99",
+		// status Bar item background color when clicking
+		"statusBarItem.activeBackground": "#877fff",
+		// status Bar item background color when hovering
+		"statusBarItem.hoverBackground": "#555555",
+		// status Bar prominent items background color. Prominent items stand out from other Status Bar entries to indicate importance. Change mode Toggle Tab Key Moves Focus from command palette to see an example
+		"statusBarItem.prominentBackground": "#555555",
+		// status Bar prominent items background color when hovering. Prominent items stand out from other Status Bar entries to indicate importance. Change mode Toggle Tab Key Moves Focus from command palette to see an example
+		"statusBarItem.prominentHoverBackground": "#1e1e1e",
+
+
+		// TITLE BAR (MAC OS) //
+
+		// title Bar background when the window is active
+		"titleBar.activeBackground": "#3c3c3c",
+		// title Bar foreground when the window is active
+		"titleBar.activeForeground": "#e1e1e1",
+		// title Bar background when the window is inactive
+		"titleBar.inactiveBackground": "#e1e1e1",
+		// title Bar foreground when the window is inactive
+		"titleBar.inactiveForeground": "#3c3c3c",
+		// title bar border color
+		"titleBar.border": "#80beff99",
+
+
+		// NOTIFICATION COLORS //
+
+		// notification center border color
+		"notificationCenter.border": "#ffb3ff99",
+		// notification center header foreground color
+		"notificationCenterHeader.foreground": "#e1e1e1",
+		// notification center header background color
+		"notificationCenterHeader.background": "#3c3c3c",
+		// notification toast border color
+		"notificationToast.border": "#ffb3ff99",
+		// notification foreground color
+		"notifications.foreground": "#e1e1e1",
+		// notification background color
+		"notifications.background": "#1e1e1e",
+		// notification border color separating from other notifications in the notification center
+		"notifications.border": "#80beff99",
+		// notification links foreground color
+		"notificationLink.foreground": "#877fff",
+
+
+		// EXTENSIONS //
+
+		// extension view button foreground color (for example Install button)
+		"extensionButton.prominentForeground": "#1e1e1e",
+		// extension view button background color
+		"extensionButton.prominentBackground": "#877fff",
+		// extension view button background hover color
+		"extensionButton.prominentHoverBackground": "#ffb3ff",
+
+
+		// QUICK PICKER //
+
+		// quick picker (Quick Open) color for grouping borders
+		"pickerGroup.border": "#fcf270",
+		// quick picker (Quick Open) color for grouping labels
+		"pickerGroup.foreground": "#c3c3c3",
+
+
+		// INTEGRATED TERMINAL COLORS //
+
+		// the background of the Integrated Terminal's viewport
+		"terminal.background": "#1e1e1e",
+		// the color of the border that separates split panes within the terminal. This defaults to panel.border
+		"terminal.border": "#877fff99",
+		// the default foreground color of the Integrated Terminal
+		"terminal.foreground": "#e1e1e1",
+		// 'Black' ANSI color in the terminal
+		"terminal.ansiBlack": "#1e1e1e",
+		// 'Blue' ANSI color in the terminal
+		"terminal.ansiBlue": "#0080ff",
+		// 'BrightBlack' ANSI color in the terminal
+		"terminal.ansiBrightBlack": "#3c3c3c",
+		// 'BrightBlue' ANSI color in the terminal
+		"terminal.ansiBrightBlue": "#80beff",
+		// 'BrightCyan' ANSI color in the terminal
+		"terminal.ansiBrightCyan": "#00ffff",
+		// 'BrightGreen' ANSI color in the terminal
+		"terminal.ansiBrightGreen": "#9cff4c",
+		// brightMagenta' ANSI color in the terminal
+		"terminal.ansiBrightMagenta": "#877fff",
+		// 'BrightRed' ANSI color in the terminal
+		"terminal.ansiBrightRed": "#ffb3ff",
+		// 'BrightWhite' ANSI color in the terminal
+		"terminal.ansiBrightWhite": "#e1e1e1",
+		// 'BrightYellow' ANSI color in the terminal
+		"terminal.ansiBrightYellow": "#fcf270",
+		// 'Cyan' ANSI color in the terminal
+		"terminal.ansiCyan": "#23d6f1",
+		// 'Green' ANSI color in the terminal
+		"terminal.ansiGreen": "#20df20",
+		// 'Magenta' ANSI color in the terminal
+		"terminal.ansiMagenta": "#804bff",
+		// 'Red' ANSI color in the terminal
+		"terminal.ansiRed": "#ff7fff",
+		// 'White' ANSI color in the terminal
+		"terminal.ansiWhite": "#c3c3c3",
+		// 'Yellow' ANSI color in the terminal
+		"terminal.ansiYellow": "#f0f040",
+		// the selection background color of the terminal
+		"terminal.selectionBackground": "#ffb3ff66",
+		// the background color of the terminal cursor. Allows customizing the color of a character overlapped by a block cursor
+		"terminalCursor.background": "#ffb3ff",
+		// the foreground color of the terminal cursor
+		"terminalCursor.foreground": "#ffb3ff",
+
+
+		// DEBUG //
+
+		// debug toolbar background color
+		"debugToolBar.background": "#3c3c3c",
+		// debug toolbar border color
+		"debugToolBar.border": "#ffb3ffcc",
+
+
+		// WELCOME PAGE //
+
+		// background color for the buttons on the Welcome page
+		"welcomePage.buttonBackground": "#1e1e1e",
+		// hover background color for the buttons on the Welcome page
+		"welcomePage.buttonHoverBackground": "#3c3c3c",
+		// background color for the embedded editors on the Interactive Playground
+		"walkThrough.embeddedEditorBackground": "#3c3c3c",
+
+
+		// GIT COLORS //
+
+		// color for modified Git resources. Used for file labels and the SCM viewlet
+		"gitDecoration.modifiedResourceForeground": "#f9690e",
+		// color for deleted Git resources. Used for file labels and the SCM viewlet
+		"gitDecoration.deletedResourceForeground": "#ff7fff",
+		// color for untracked Git resources. Used for file labels and the SCM viewlet
+		"gitDecoration.untrackedResourceForeground": "#f0f040",
+		// color for ignored Git resources. Used for file labels and the SCM viewlet
+		"gitDecoration.ignoredResourceForeground": "#777777",
+		// color for conflicting Git resources. Used for file labels and the SCM viewlet
+		"gitDecoration.conflictingResourceForeground": "#804bff",
+		// "color for submodule resources
+		"gitDecoration.submoduleResourceForeground": "#23d6f1",
+
+
+		// SETTINGS EDITOR COLORS //
+
+		// the foreground color for a section header or active title
+		"settings.headerForeground": "#e1e1e1",
+		// the foreground color for a the modified setting indicator
+		"settings.modifiedItemForeground": "#e13b74",
+		// the color of the selected setting row border, when the settings list does not have focus
+		"settings.inactiveSelectedItemBorder": "#555555",
+		// dropdown background
+		"settings.dropdownBackground": "#3c3c3c",
+		// dropdown foreground
+		"settings.dropdownForeground": "#00ffff",
+		// dropdown border
+		"settings.dropdownBorder": "#ffb3ffcc",
+		// checkbox background
+		"settings.checkboxBackground": "#3c3c3c",
+		// checkbox foreground
+		"settings.checkboxForeground": "#9cff4c",
+		// checkbox border
+		"settings.checkboxBorder": "#e26a9bcc",
+		// text input box background
+		"settings.textInputBackground": "#3c3c3c",
+		// text input box foreground
+		"settings.textInputForeground": "#fcf270",
+		// text input box border
+		"settings.textInputBorder": "#877fff99",
+		// number input box background
+		"settings.numberInputBackground": "#3c3c3c",
+		// number input box foreground
+		"settings.numberInputForeground": "#f39c12",
+		// number input box border
+		"settings.numberInputBorder": "#0080ff99",
+
+
+		// BREADCRUMBS //
+
+		// color of breadcrumb items
+		"breadcrumb.foreground": "#c3c3c3",
+		// color of focused breadcrumb items
+		"breadcrumb.focusForeground": "#ffb3ff",
+		// color of selected breadcrumb items
+		"breadcrumb.activeSelectionForeground": "#ffb3ff",
+		// background color of breadcrumb item picker
+		"breadcrumbPicker.background": "#1e1e1e",
+
+
+		// MENU //
+
+		// background of menus and context menus
+		"menu.background": "#1e1e1e",
+		// foreground of menus and context menus
+		"menu.foreground": "#c3c3c3",
+		// background of selected item in menus and context menus
+		"menu.selectionBackground": "#3c3c3c99",
+		// foreground of selected item in menus and context menus
+		"menu.selectionForeground": "#877fff",
+		// border of selected item in menus and context menus
+		"menu.selectionBorder": "#3c3c3c",
+		// background of selected top-level menu in the menubar
+		"menubar.selectionBackground": "#555555",
+		// foreground of selected top-level menu in the menubar
+		"menubar.selectionForeground": "#00ffff",
+		// border of selected top-level menu in the menubar
+		"menubar.selectionBorder": "#ffb3ffcc"
+	},
+
+	// for Syntax theme
+	"tokenColors": [
+		// To test in your workspace, paste the 'tokenColors' rules into the JSON property below and paste all into 'Workspace Settings'.
+		// "editor.tokenColorCustomizations": {
+		// 		"textMateRules": [
+		// 			<paste rules here>
+		// 		]
+		// }
+
+		{
+			"name": "[Global] - Comment",
+			"scope": [
+				"comment"
+			],
+			"settings": {
+				"foreground": "#777777",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[Global] - Comment Line / Block",
+			"scope": [
+				"comment.line",
+				"comment.block",
+				"punctuation.definition.comment"
+			],
+			"settings": {
+				"foreground": "#777777",
+				"fontStyle": "italic"
+			}
+		},
+
+		// Constant
+		{
+			"name": "[Global] - Constant",
+			"scope": [
+				"constant"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Constant Character",
+			"scope": [
+				"constant.character"
+			],
+			"settings": {
+				"foreground": "#80beff"
+			}
+		},
+		{
+			"name": "[Global] - Constant Language",
+			"scope": [
+				"constant.language"
+			],
+			"settings": {
+				"foreground": "#ffb3ff"
+			}
+		},
+		{
+			"name": "[Global] - Constant Numeric",
+			"scope": [
+				"constant.numeric"
+			],
+			"settings": {
+				"foreground": "#e26a9b"
+			}
+		},
+		{
+			"name": "[Global] - Constant Other",
+			"scope": [
+				"constant.other",
+				"constant.other.color.rgb-value"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+
+		// Entity
+		{
+			"name": "[Global] - Entity",
+			"scope": [
+				"entity",
+				"entity.name",
+				"entity.name.selector",
+				"entity.other"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Entity Name Class",
+			"scope": [
+				"entity.name.class"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold underline"
+			}
+		},
+		{
+			"name": "[Global] - Entity Name Function / Method",
+			"scope": [
+				"entity.name.function",
+				"entity.name.method"
+			],
+			"settings": {
+				"foreground": "#9cff4ccc"
+			}
+		},
+		{
+			"name": "[Global] - Entity Name Section",
+			"scope": [
+				"entity.name.section"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+		{
+			"name": "[Global] - Entity Name Tag",
+			"scope": [
+				"entity.name.tag"
+			],
+			"settings": {
+				"foreground": "#0080ff"
+			}
+		},
+		{
+			"name": "[Global] - Entity Name Type",
+			"scope": [
+				"entity.name.type"
+			],
+			"settings": {
+				"foreground": "#76ff76"
+			}
+		},
+		{
+			"name": "[Global] - Entity Other Attribute Name",
+			"scope": [
+				"entity.other.attribute-name"
+			],
+			"settings": {
+				"foreground": "#fcf270"
+			}
+		},
+		{
+			"name": "[Global] - Entity Other Inherited Class",
+			"scope": [
+				"entity.other.inherited-class"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold"
+			}
+		},
+
+		// Invalid
+		{
+			"name": "[Global] - Invalid",
+			"scope": [
+				"invalid",
+				"invalid.deprecated",
+				"invalid.illegal"
+			],
+			"settings": {
+				"foreground": "#ff0000"
+			}
+		},
+
+		// Keyword
+		{
+			"name": "[Global] - Keyword",
+			"scope": [
+				"keyword"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Keyword Arithmetic / Assignment / Logical",
+			"scope": [
+				"keyword.operator.arithmetic",
+				"keyword.operator.assignment",
+				"keyword.operator.logical"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+		{
+			"name": "[Global] - Keyword Control / Operator",
+			"scope": [
+				"keyword.control",
+				"keyword.operator"
+			],
+			"settings": {
+				"foreground": "#23d6f1"
+			}
+		},
+		{
+			"name": "[Global] - Keyword New",
+			"scope": [
+				"keyword.operator.new"
+			],
+			"settings": {
+				"foreground": "#0047ff"
+			}
+		},
+		{
+			"name": "[Global] - Keyword Operator Logical",
+			"scope": [
+				"keyword.operator.logical"
+			],
+			"settings": {
+				"foreground": "#ff7fff"
+			}
+		},
+		{
+			"name": "[Global] - Keyword Other",
+			"scope": [
+				"keyword.other"
+			],
+			"settings": {
+				"foreground": "#00ffff"
+			}
+		},
+
+		// Markup
+		{
+			"name": "[Global] - Markup",
+			"scope": [
+				"markup",
+				"markup.changed",
+				"markup.deleted",
+				"markup.heading",
+				"markup.inserted",
+				"markup.list",
+				"markup.list.numbered",
+				"markup.list.unnumbered",
+				"markup.other",
+				"markup.quote"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Markup Bold",
+			"scope": [
+				"markup.bold"
+			],
+			"settings": {
+				"foreground": "#e1e1e1",
+				"fontStyle": "bold"
+			}
+		},
+		{
+			"name": "[Global] - Markup Bold Italic",
+			"scope": [
+				"markup.bold markup.italic",
+				"markup.italic markup.bold"
+			],
+			"settings": {
+				"foreground": "#e1e1e1",
+				"fontStyle": "italic bold"
+			}
+		},
+		{
+			"name": "[Global] - Markup Fenced Code Block",
+			"scope": [
+				"markup.fenced_code.block"
+			],
+			"settings": {
+				"foreground": "#877fff"
+			}
+		},
+		{
+			"name": "[Global] - Markup Fenced Code Block Language",
+			"scope": [
+				"markup.fenced_code.block fenced_code.block.language"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[Global] - Markup Raw Inline",
+			"scope": [
+				"markup.inline.raw",
+				"markup.raw"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[Global] - Markup Italic",
+			"scope": [
+				"markup.italic"
+			],
+			"settings": {
+				"foreground": "#e1e1e1",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[Global] - Markup Underline",
+			"scope": [
+				"markup.underline"
+			],
+			"settings": {
+				"foreground": "#e1e1e1",
+				"fontStyle": "underline"
+			}
+		},
+		{
+			"name": "[Global] - Markup Underlined Link",
+			"scope": [
+				"markup.underline.link"
+			],
+			"settings": {
+				"foreground": "#23d6f1"
+			}
+		},
+
+		// Meta
+		{
+			"name": "[Global] - Meta",
+			"scope": [
+				"meta"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Meta Brace",
+			"scope": [
+				"meta.brace"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+
+		// Storage
+		{
+			"name": "[Global] - Storage",
+			"scope": [
+				"storage"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Storage Modifier",
+			"scope": [
+				"storage.modifier"
+			],
+			"settings": {
+				"foreground": "#0080ff",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[Global] - Storage Type",
+			"scope": [
+				"storage.type"
+			],
+			"settings": {
+				"foreground": "#0080ff"
+			}
+		},
+		{
+			"name": "[Global] - Storage Type Arrow Function",
+			"scope": [
+				"storage.type.function.arrow"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+
+		// String
+		{
+			"name": "[Global] - String",
+			"scope": [
+				"string",
+				"punctuation.definition.string"
+			],
+			"settings": {
+				"foreground": "#c3c3c3cc"
+			}
+		},
+		{
+			"name": "[Global] - String Template",
+			"scope": [
+				"string.template",
+				"punctuation.definition.string.template"
+			],
+			"settings": {
+				"foreground": "#c3c3c3cc"
+			}
+		},
+
+		// Support
+		{
+			"name": "[Global] - Support",
+			"scope": [
+				"support",
+				"support.other"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Support Class",
+			"scope": [
+				"support.class"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold"
+			}
+		},
+		{
+			"name": "[Global] - Support Constant",
+			"scope": [
+				"support.constant",
+				"support.constant.color",
+				"support.constant.font-name",
+				"support.constant.property-value",
+				"support.variable.property.dom"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[Global] - Support Function",
+			"scope": [
+				"support.function"
+			],
+			"settings": {
+				"foreground": "#9cff4c",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[Global] - Support Type / Variable",
+			"scope": [
+				"support.type",
+				"support.type.exception",
+				"support.variable"
+			],
+			"settings": {
+				"foreground": "#f39c12",
+				"fontStyle": "bold"
+			}
+		},
+		{
+			"name": "[Global] - Support Type Property Name",
+			"scope": [
+				"support.type.property-name"
+			],
+			"settings": {
+				"foreground": "#f9690e"
+			}
+		},
+
+		// Variable
+		{
+			"name": "[Global] - Variable",
+			"scope": [
+				"variable",
+				"variable.name"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[Global] - Variable Language",
+			"scope": [
+				"variable.language"
+			],
+			"settings": {
+				"foreground": "#e13b74",
+				"fontStyle": "italic bold"
+			}
+		},
+		{
+			"name": "[Global] - Variable Other",
+			"scope": [
+				"variable.other"
+			],
+			"settings": {
+				"foreground": "#f39c12"
+			}
+		},
+		{
+			"name": "[Global] - Variable Other Class",
+			"scope": [
+				"variable.other.class"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold"
+			}
+		},
+		{
+			"name": "[Global] - Variable Other ReadWrite",
+			"scope": [
+				"variable.other.readwrite"
+			],
+			"settings": {
+				"foreground": "#e13b74"
+			}
+		},
+		{
+			"name": "[Global] - Variable Parameter",
+			"scope": [
+				"variable.parameter"
+			],
+			"settings": {
+				"foreground": "#804bff",
+				"fontStyle": "bold"
+			}
+		},
+
+		// Punctuation
+		{
+			"name": "[Global] - Punctuation",
+			"scope": [
+				"punctuation",
+				"punctuation.definition.parameters",
+				"punctuation.definition.string",
+				"punctuation.definition.template-expression",
+				"punctuation.definition.tag",
+				"punctuation.section.embedded.begin",
+				"punctuation.section.embedded.end"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[Global] - Punctuation Template Expression Definition",
+			"scope": [
+				"punctuation.definition.template-expression"
+			],
+			"settings": {
+				"foreground": "#00ffff"
+			}
+		},
+		{
+			"name": "[Global] - Punctuation Variable Definition",
+			"scope": [
+				"punctuation.definition.variable"
+			],
+			"settings": {
+				"foreground": "#00ffff"
+			}
+		},
+
+
+		// INFO - WARNING - ERROR //
+
+		{
+			"name": "[Global] - Token Debug",
+			"scope": [
+				"token.debug-token"
+			],
+			"settings": {
+				"foreground": "#ffff00cc",
+				"fontStyle": "underline"
+			}
+		},
+		{
+			"name": "[Global] - Token Error",
+			"scope": [
+				"token.error-token"
+			],
+			"settings": {
+				"foreground": "#ff0000cc",
+				"fontStyle": "underline"
+			}
+		},
+		{
+			"name": "[Global] - Token Info",
+			"scope": [
+				"token.info-token"
+			],
+			"settings": {
+				"foreground": "#00ff00cc",
+				"fontStyle": "underline"
+			}
+		},
+		{
+			"name": "[Global] - Token Warning",
+			"scope": [
+				"token.warn-token"
+			],
+			"settings": {
+				"foreground": "#ffa500cc",
+				"fontStyle": "underline"
+			}
+		},
+
+
+		// CSS //
+
+		{
+			"name": "[CSS] - Entity Name Tag",
+			"scope": [
+				"entity.name.tag.css"
+			],
+			"settings": {
+				"foreground": "#0080ff"
+			}
+		},
+		{
+			"name": "[CSS] - Entity Class",
+			"scope": [
+				"entity.other.attribute-name.class.css"
+			],
+			"settings": {
+				"foreground": "#76ff76",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[CSS] - Entity ID",
+			"scope": [
+				"entity.other.attribute-name.id.css"
+			],
+			"settings": {
+				"foreground": "#f0f040",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[CSS] - Property Value",
+			"scope": [
+				"meta.property-value.css"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[CSS] - Source",
+			"scope": [
+				"source.css"
+			],
+			"settings": {
+				"foreground": "#ff1111"
+			}
+		},
+		{
+			"name": "[CSS] - Variable",
+			"scope": [
+				"variable.css"
+			],
+			"settings": {
+				"foreground": "#e13b74"
+			}
+		},
+		{
+			"name": "[CSS] - Variable Argument",
+			"scope": [
+				"variable.argument.css"
+			],
+			"settings": {
+				"foreground": "#e13b74",
+				"fontStyle": "italic"
+			}
+		},
+
+
+		// HTML //
+
+		{
+			"name": "[HTML] - Embedded Block Attribute",
+			"scope": [
+				"meta.embedded.block.html entity.other.attribute-name"
+			],
+			"settings": {
+				"foreground": "#0080ff"
+			}
+		},
+		{
+			"name": "[HTML] - HTML Closing Tag Angle Bracket / Slash",
+			"scope": [
+				"meta.scope.between-tag-pair.html",
+				"meta.tag.block.any.html"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[HTML] - Tag Attribute Equal Sign",
+			"scope": [
+				"meta.tag.inline.any.html",
+				"meta.tag.other.html"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+		{
+			"name": "[HTML] - String",
+			"scope": [
+				"string.quoted.double.html meta"
+			],
+			"settings": {
+				"foreground": "#c3c3c3"
+			}
+		},
+		{
+			"name": "[HTML] - HTML Tag Attribute Equal Sign",
+			"scope": [
+				"text.html.basic meta"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+
+
+		// INI //
+
+		{
+			"name": "[INI] - Source",
+			"scope": [
+				"source.ini"
+			],
+			"settings": {
+				"foreground": "#e1e1e1"
+			}
+		},
+		{
+			"name": "[INI] - Key / Value Equal Sign",
+			"scope": [
+				"punctuation.separator.key-value.ini"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+
+
+		// JAVASCRIPT //
+
+		{
+			"name": "[JAVASCRIPT] - Object Property / Key",
+			"scope": [
+				"constant.other.object.key.js string.unquoted.label.js"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Template String Backtick",
+			"scope": [
+				"keyword.other.template.begin.js",
+				"keyword.other.template.end.js"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Class Semicolon",
+			"scope": [
+				"meta.class.js"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Class Function Declaration",
+			"scope": [
+				"meta.class.js meta.function-call.with-arguments.js variable.function.js",
+				"meta.class.js meta.function-call.without-arguments.js variable.function.js"
+			],
+			"settings": {
+				"foreground": "#9cff4c"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Class Method Variable",
+			"scope": [
+				"meta.class.js meta.group.braces.curly meta.group.braces.round.js variable.other.readwrite.js"
+			],
+			"settings": {
+				"foreground": "#e13b74"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Class Function Call",
+			"scope": [
+				"meta.class.js meta.group.braces.curly.js meta.function-call.with-arguments.js variable.function.js",
+				"meta.class.js meta.group.braces.curly.js meta.function-call.without-arguments.js variable.function.js"
+			],
+			"settings": {
+				"foreground": "#9cff4c",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Class Method Argument",
+			"scope": [
+				"meta.class.js meta.group.braces.round.js variable.other.readwrite.js"
+			],
+			"settings": {
+				"foreground": "#804bff"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Comma",
+			"scope": [
+				"meta.delimiter.comma.js"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Method / Static Function Call",
+			"scope": [
+				"meta.function-call.method.with-arguments.js variable.function.js",
+				"meta.function-call.method.without-arguments.js variable.function.js",
+				"meta.function-call.static.with-arguments.js variable.function.js"
+			],
+			"settings": {
+				"foreground": "#9cff4ccc",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Function Call",
+			"scope": [
+				"meta.function-call.with-arguments.js variable.function.js",
+				"meta.function-call.without-arguments.js variable.function.js"
+			],
+			"settings": {
+				"foreground": "#9cff4c",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Function Argument Round Brace",
+			"scope": [
+				"meta.group.braces.round.function.arguments.js"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Function Argument Comma",
+			"scope": [
+				"meta.group.braces.round.js"],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Array Comma",
+			"scope": [
+				"meta.group.braces.square.js"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - JSX Children",
+			"scope": [
+				"meta.jsx.children.js"
+			],
+			"settings": {
+				"foreground": "#e1e1e1"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - JSX Text",
+			"scope": [
+				"meta.jsx.js"
+			],
+			"settings": {
+				"foreground": "#e1e1e1"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Object Key",
+			"scope": [
+				"meta.object-literal.key.js"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Object Property",
+			"scope": [
+				"meta.property.object.js"
+			],
+			"settings": {
+				"foreground": "#fcf270"
+			}
+		},
+		{
+			"name": "[JAVASCRIPT] - Class Constructor Function",
+			"scope": [
+				"variable.function.constructor.js"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold"
+			}
+		},
+
+
+		// JSON //
+
+		{
+			"name": "[JSON] - Key Level 1",
+			"scope": [
+				"source.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#0080ff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 2",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#f9690e"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 3",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#23d6f1"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 4",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 5",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#804bff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 6",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#28a228"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 7",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#e13b74"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 8",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#ff7fff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 9",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#0047ff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 10",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#80beff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 11",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#f39c12"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 12",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#00ffff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 13",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#fcf270"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 14",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#877fff"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 15",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#9cff4c"
+			}
+		},
+		{
+			"name": "[JSON] - Key Level 16",
+			"scope": [
+				"source.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json meta.structure.dictionary.value.json meta.structure.dictionary.json support.type.property-name.json"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+
+
+		// MARKDOWN //
+
+		{
+			"name": "[MARKDOWN] - Quote / List Punctuation",
+			"scope": [
+				"beginning.punctuation.definition.quote.markdown",
+				"beginning.punctuation.definition.list.markdown"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Heading 1",
+			"scope": [
+				"heading.1.markdown entity.name.section.markdown",
+				"heading.1.markdown punctuation.definition.heading.markdown"
+			],
+			"settings": {
+				"foreground": "#ff7fff"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Heading 2",
+			"scope": [
+				"heading.2.markdown entity.name.section.markdown",
+				"heading.2.markdown punctuation.definition.heading.markdown"
+			],
+			"settings": {
+				"foreground": "#00ffff"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Heading 3",
+			"scope": [
+				"heading.3.markdown entity.name.section.markdown",
+				"heading.3.markdown punctuation.definition.heading.markdown"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Heading 4",
+			"scope": [
+				"heading.4.markdown entity.name.section.markdown",
+				"heading.4.markdown punctuation.definition.heading.markdown"
+			],
+			"settings": {
+				"foreground": "#ffb3ff"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Heading 5",
+			"scope": [
+				"heading.5.markdown entity.name.section.markdown",
+				"heading.5.markdown punctuation.definition.heading.markdown"
+			],
+			"settings": {
+				"foreground": "#80beff"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Heading 6",
+			"scope": [
+				"heading.6.markdown entity.name.section.markdown",
+				"heading.6.markdown punctuation.definition.heading.markdown"
+			],
+			"settings": {
+				"foreground": "#fcf270"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Fenced Code Block",
+			"scope": [
+				"markup.fenced_code.block.markdown meta.embedded.block"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Quote",
+			"scope": [
+				"markup.quote.markdown meta.paragraph.markdown"
+			],
+			"settings": {
+				"foreground": "#c3c3c3cc"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Link ID / Reference",
+			"scope": [
+				"meta.link.reference.markdown constant.other.reference.link.markdown",
+				"meta.image.reference.markdown constant.other.reference.link.markdown"
+			],
+			"settings": {
+				"foreground": "#23d6f1"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Valid Ampersand / Bracket",
+			"scope": [
+				"meta.other.valid-ampersand.markdown",
+				"meta.other.valid-bracket.markdown"
+			],
+			"settings": {
+				"foreground": "#e1e1e1"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Paragraph",
+			"scope": [
+				"meta.paragraph.markdown"
+			],
+			"settings": {
+				"foreground": "#e1e1e1"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Separator",
+			"scope": [
+				"meta.separator.markdown"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[MARKDOWN] - Link Title / Description",
+			"scope": [
+				"string.other.link.title.markdown",
+				"string.other.link.description.markdown"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+
+
+		// PHP //
+
+		{
+			"name": "[PHP] - Class Constant",
+			"scope": [
+				"constant.other.class.php"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold"
+			}
+		},
+		{
+			"name": "[PHP] - Class Entity",
+			"scope": [
+				"entity.name.type.class.php"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold underline"
+			}
+		},
+		{
+			"name": "[PHP] - New Keyword",
+			"scope": [
+				"keyword.other.new.php"
+			],
+			"settings": {
+				"foreground": "#0047ff"
+			}
+		},
+		{
+			"name": "[PHP] - Block Comments",
+			"scope": [
+				"keyword.other.phpdoc.php",
+				"meta.other.type.phpdoc.php support.class.builtin.php"
+			],
+			"settings": {
+				"foreground": "#777777",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[PHP] - Method Call",
+			"scope": [
+				"meta.method-call.php entity.name.function.php"
+			],
+			"settings": {
+				"foreground": "#9cff4ccc",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[PHP] - Variable Other",
+			"scope": [
+				"variable.other.php"
+			],
+			"settings": {
+				"foreground": "#e13b74"
+			}
+		},
+
+
+		// POWERSHELL //
+
+		{
+			"name": "[Powershell] - Semicolon",
+			"scope": [
+			"keyword.other.statement-separator.powershell"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[Powershell] - Scriptblock",
+			"scope": [
+			"meta.scriptblock.powershell"
+			],
+			"settings": {
+				"foreground": "#f9690e"
+			}
+		},
+		{
+			"name": "[Powershell] - Comment Period",
+			"scope": [
+			"source.powershell comment.block.powershell comment.documentation.embedded.powershell constant.string.documentation.powershell"
+			],
+			"settings": {
+				"foreground": "#777777"
+			}
+		},
+		{
+			"name": "[Powershell] - Comment Keyword",
+			"scope": [
+			"source.powershell comment.block.powershell comment.documentation.embedded.powershell keyword.operator.documentation.powershell"
+			],
+			"settings": {
+				"foreground": "#777777"
+			}
+		},
+
+
+		// PUG //
+
+		{
+			"name": "[PUG] - Comment",
+			"scope": [
+				"comment.unbuffered.block.pug"
+			],
+			"settings": {
+				"foreground": "#777777"
+			}
+		},
+		{
+			"name": "[PUG] - Attribute Round Braces",
+			"scope": [
+				"constant.name.attribute.tag.pug"
+			],
+			"settings": {
+				"foreground": "#20df20"
+			}
+		},
+		{
+			"name": "[PUG] - Attribute Equal Sign & Comma",
+			"scope": [
+				"text.pug meta.tag.other"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+
+
+		// PYTHON //
+
+		{
+			"name": "[PYTHON] - Function Argument",
+			"scope": [
+				"meta.function-call.arguments.python"
+			],
+			"settings": {
+				"foreground": "#804bff"
+			}
+		},
+		{
+			"name": "[PYTHON] - Function Call",
+			"scope": [
+				"meta.function-call.generic.python"
+			],
+			"settings": {
+				"foreground": "#9cff4c",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[PYTHON] - Item Access Argument",
+			"scope": [
+				"meta.item-access.arguments.python"
+			],
+			"settings": {
+				"foreground": "#e13b74"
+			}
+		},
+		{
+			"name": "[PYTHON] - Item Access",
+			"scope": [
+				"meta.item-access.python"
+			],
+			"settings": {
+				"foreground": "#f39c12"
+			}
+		},
+
+
+		// SHELL //
+
+			{
+				"name": "[SHELL] - Glob Operator",
+				"scope": [
+					"keyword.operator.glob.shell"
+				],
+				"settings": {
+					"foreground": "#f0f040"
+				}
+			},
+			{
+				"name": "[SHELL] - Logical Operator Keyword",
+				"scope": [
+					"keyword.operator.logical.shell"
+				],
+				"settings": {
+					"foreground": "#ff7fff"
+				}
+			},
+			{
+				"name": "[SHELL] - Case Pattern Scope",
+				"scope": [
+					"meta.scope.case-pattern.shell"
+				],
+				"settings": {
+					"foreground": "#ff7fff"
+				}
+			},
+			{
+				"name": "[SHELL] - Scope Group",
+				"scope": [
+					"meta.scope.group.shell",
+					"meta.scope.group.shell meta.scope.while-loop.shell"
+				],
+				"settings": {
+					"foreground": "#e13b74"
+				}
+			},
+			{
+				"name": "[SHELL] - If Block / For In Loop / Case Clause Body Shell",
+				"scope": [
+					"meta.scope.if-block.shell",
+					"meta.scope.for-in-loop.shell",
+					"meta.scope.case-clause-body.shell"
+				],
+				"settings": {
+					"foreground": "#e13b74"
+				}
+			},
+			{
+				"name": "[SHELL] - Logical Expression",
+				"scope": [
+					"meta.scope.logical-expression.shell"
+				],
+				"settings": {
+					"foreground": "#e1e1e1"
+				}
+			},
+
+
+		// TYPESCRIPT //
+
+		{
+			"name": "[TYPESCRIPT] - Class Entity",
+			"scope": [
+				"entity.name.type.class.ts",
+				"entity.name.type.class.tsx"
+			],
+			"settings": {
+				"foreground": "#28a228",
+				"fontStyle": "bold underline"
+			}
+		},
+		{
+			"name": "[TYPESCRIPT] - Function Call",
+			"scope": [
+				"meta.class.ts meta.function-call.ts entity.name.function.ts",
+				"meta.class.tsx meta.function-call.tsx entity.name.function.tsx",
+				"meta.function-call.ts entity.name.function.ts",
+				"meta.function-call.tsx entity.name.function.tsx"
+			],
+			"settings": {
+				"foreground": "#9cff4c",
+				"fontStyle": "italic"
+			}
+		},
+		{
+			"name": "[TYPESCRIPT] - Support Class",
+			"scope": [
+				"meta.class.ts support.class.console.ts",
+				"meta.class.tsx support.class.console.tsx"
+			],
+			"settings": {
+				"foreground": "#f39c12",
+				"fontStyle": "bold"
+			}
+		},
+		{
+			"name": "[TYPESCRIPT] - Object Property",
+			"scope": [
+				"meta.object-literal.key.ts",
+				"meta.object-literal.key.tsx",
+				"variable.object.property.ts",
+				"variable.object.property.tsx"
+			],
+			"settings": {
+				"foreground": "#22a7ff"
+			}
+		},
+
+
+		// XML //
+
+		{
+			"name": "[XML] - Tag Attribute Equal Sign",
+			"scope": [
+				"meta.tag.xml"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		},
+		{
+			"name": "[XML] - XML Tag Attribute Equal Sign",
+			"scope": [
+				"text.xml meta.tag.preprocessor.xml"
+			],
+			"settings": {
+				"foreground": "#f0f040"
+			}
+		}
+	]
+}

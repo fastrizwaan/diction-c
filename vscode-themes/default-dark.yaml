@@ -1,0 +1,106 @@
+version: 1
+name: Default Dark (YAML)
+is_dark: true
+
+ui:
+  background: "#282C34"
+  foreground: "#DCDFE4"
+  gutter_bg: "#282C34"
+  gutter_fg: "#7B8497"
+  gutter_active_fg: "#DCDFE4"
+  line_highlight: "#99BBFF14"
+  selection: "#4E5666"
+  cursor_color: "#528BFF"
+  find_match: "#528BFF4D"
+  find_match_highlight: "#528BFF4D"
+
+  tab_active_bg: "#282C34"
+  tab_active_fg: "#E6E9EE"
+  tab_inactive_bg: "#21252B"
+  tab_inactive_fg: "#B2B9C6"
+  tab_border: "#181A1F"
+
+  titlebar_bg: "#21252B"
+  titlebar_fg: "#B2B9C6"
+  statusbar_bg: "#21252B"
+  statusbar_fg: "#B2B9C6"
+
+  scrollbar_bg: "#4E566680"
+  scrollbar_hover: "#5A637580"
+  scrollbar_active: "#747D9180"
+
+syntax:
+  common:
+    keyword: "#D58CFA italic"             # COLOR_KEYWORD
+    constant.character.escape: "#73D0DF" # COLOR_BUILTIN
+    string: "#A8D98B"                # COLOR_STRING
+    comment: "#9A9FA9"               # COLOR_COMMENT
+    constant.numeric: "#E3AC7A"      # COLOR_NUMBER
+    entity.name.function: "#79C2FF"  # COLOR_FUNCTION
+    entity.name.type: "#F5D18C"      # COLOR_TYPE
+    variable: "#EF828C"              # COLOR_VARIABLE (Pink)
+    variable.other.member: "#E8E8E8" # COLOR_MEMBER (White)
+    keyword.operator: "#E3AC7A"      # COLOR_OPERATOR (Orange/Yellow for =, ->)
+    punctuation: "#7B8497"           # COLOR_PUNCTUATION (Gray for ., ;)
+    constant: "#EF828C"              # COLOR_CONSTANT
+    entity.name.tag: "#EF828C"       # COLOR_TAG
+    entity.other.attribute-name: "#E3AC7A" # COLOR_ATTRIBUTE
+    variable.parameter: "#EF828C"    # COLOR_PARAM
+    variable.other.property: "#73D0DF" # COLOR_PROPERTY
+    meta.preprocessor: "#D58CFA"     # COLOR_PREPROC
+    keyword.operator.logical: "#73D0DF" # COLOR_LOGICAL
+
+  C/C++:
+    keyword: "#D58CFA bold underline"
+    entity.name.function: "#79C2FF"
+    string: "#A8D98B"
+    comment: "#9A9FA9"
+    entity.name.type: "#F5D18C"
+    variable.other.member: "#E8E8E8"
+
+  python:
+    keyword: "#D58CFA"
+    entity.name.function: "#79C2FF"
+    string: "#A8D98B"
+    comment: "#9A9FA9"
+    entity.name.type: "#F5D18C"
+
+  desktop:
+    keyword: "#79C2FF"
+    string: "#A8D98B"
+    entity.name.type: "#D58CFA"
+
+  yaml:
+    entity.name.tag: "#EF828C"
+    string: "#A8D98B"
+    keyword: "#D58CFA"
+    constant.numeric: "#E3AC7A"
+
+  xml:
+    entity.name.tag: "#EF828C"
+    entity.other.attribute-name: "#E3AC7A"
+    string: "#A8D98B"
+    comment: "#9A9FA9"
+
+  rust:
+    keyword: "#D58CFA"
+    entity.name.function: "#79C2FF"
+    string: "#A8D98B"
+    comment: "#9A9FA9"
+    entity.name.type: "#F5D18C"
+    meta.preprocessor: "#D58CFA" # macros
+
+  markdown:
+    markup.heading: "#EF828C"
+    markup.bold: "#E3AC7A"
+    markup.italic: "#73D0DF"
+    string: "#A8D98B"
+    comment: "#9A9FA9"
+    variable.language: "#79C2FF" # links/code blocks
+
+  javascript:
+    keyword: "#D58CFA"
+    entity.name.function: "#79C2FF"
+    string: "#A8D98B"
+    comment: "#9A9FA9"
+    entity.name.type: "#F5D18C"

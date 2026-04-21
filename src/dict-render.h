@@ -1,3 +1,6 @@
+#ifndef DICT_RENDER_H
+#define DICT_RENDER_H
+
 #include "dict-loader.h"
 
 /* Forward declaration for lazy resource loading (Phase 2) */
@@ -42,3 +45,5 @@ typedef struct {
 } dsl_theme_palette;
 
 void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_theme_palette *out_palette);
+
+#endif // DICT_RENDER_H

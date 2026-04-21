@@ -5,6 +5,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <glib.h>
+#include "json-theme.h"
 
 typedef struct {
     char *str;
@@ -1837,6 +1838,17 @@ void dict_render_get_theme_palette(const char *theme_name, int dark_mode, dsl_th
     out->pos = out->accent;
 
     if (!theme_name) return;
+
+    /* Try JSON theme first */
+    json_theme_manager_init();
+    if (json_theme_get_palette_by_name(theme_name, out)) {
+        /* Add fixed fallbacks for things JSON won't override */
+        out->trn = out->fg;
+        out->com = out->fg;
+        out->ex = out->string;
+        out->pos = out->accent;
+        return;
+    }
 
     /* ---------------- SOLARIZED ---------------- */
     if (g_strcmp0(theme_name, "solarized") == 0) {

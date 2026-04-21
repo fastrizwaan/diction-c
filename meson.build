@@ -39,7 +39,8 @@ srcs = [
   'src/scan-popup.c',
   'src/tray-icon.c',
   'src/langid.c',
-  'src/langpair.c'
+  'src/langpair.c',
+  'src/json-theme.c'
 ]
 
 executable('diction', srcs,
@@ -75,4 +76,11 @@ install_data(
 install_data(
   'data/icons/hicolor/scalable/actions/dice3-symbolic.svg',
   install_dir: join_paths(get_option('datadir'), 'icons', 'hicolor', 'scalable', 'actions')
+)
+
+# Install VSCode Themes
+install_subdir(
+  'vscode-themes',
+  install_dir: join_paths(get_option('datadir'), 'diction', 'themes'),
+  strip_directory: true
 )
