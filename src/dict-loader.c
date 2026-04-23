@@ -17,16 +17,6 @@ static int ends_with_ci(const char *s, const char *suffix) {
     return strcasecmp(s + sl - xl, suffix) == 0;
 }
 
-static char *path_join(const char *dir, const char *name) {
-    size_t dl = strlen(dir), nl = strlen(name);
-    int need_sep = (dl > 0 && dir[dl-1] != '/');
-    char *out = malloc(dl + nl + 2);
-    memcpy(out, dir, dl);
-    if (need_sep) out[dl++] = '/';
-    memcpy(out + dl, name, nl + 1);
-    return out;
-}
-
 static char *basename_noext(const char *path) {
     const char *slash = strrchr(path, '/');
     const char *base = slash ? slash + 1 : path;
@@ -226,40 +216,41 @@ DictMmap* dict_load_any(const char *path, DictFormat fmt, volatile gint *cancel_
 
 /* ── directory scanner ───────────────────────────────────── */
 
-static void scan_recursive(const char *dirpath, DictEntry **head,
+static void scan_recursive(const char *dirpath, GList **head,
                            DictLoaderCallback callback, void *user_data,
                            GHashTable *seen_dsl_families,
                            volatile gint *cancel_flag,
-                           gint expected_generation) {
+                           gint expected_generation,
+                           int depth) {
+    if (depth > 5) return;
     if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) return;
 
-    DIR *d = opendir(dirpath);
-    if (!d) return;
+    GDir *dir = g_dir_open(dirpath, 0, NULL);
+    if (!dir) return;
 
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
+    const char *name;
+    while ((name = g_dir_read_name(dir)) != NULL) {
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) break;
+        if (name[0] == '.') continue;
 
-        if (ent->d_name[0] == '.') continue;
+        char *full = g_build_filename(dirpath, name, NULL);
+        
+        gboolean is_dir = g_file_test(full, G_FILE_TEST_IS_DIR);
 
-        char *full = path_join(dirpath, ent->d_name);
-        struct stat st;
-        if (stat(full, &st) != 0) { free(full); continue; }
-
-        if (S_ISDIR(st.st_mode)) {
+        if (is_dir) {
             /* Skip extracted resource folders */
             if (!ends_with_ci(full, ".files") &&
                 !ends_with_ci(full, ".dsl.files") &&
                 !ends_with_ci(full, ".dsl.dz.files")) {
-                scan_recursive(full, head, callback, user_data, seen_dsl_families, cancel_flag, expected_generation);
+                scan_recursive(full, head, callback, user_data, seen_dsl_families, cancel_flag, expected_generation, depth + 1);
             }
-            free(full);
+            g_free(full);
             continue;
         }
 
         DictFormat fmt = dict_detect_format(full);
         if (fmt == DICT_FORMAT_UNKNOWN) {
-            free(full);
+            g_free(full);
             continue;
         }
 
@@ -272,7 +263,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
             family_key = dsl_family_key(full);
             if (seen_dsl_families && g_hash_table_contains(seen_dsl_families, family_key)) {
                 g_free(family_key);
-                free(full);
+                g_free(full);
                 continue;
             }
             preferred_path = dsl_preferred_variant(full);
@@ -307,7 +298,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
             g_free(family_key);
             g_free(preferred_path);
             g_free(fallback_path);
-            free(full);
+            g_free(full);
             continue;
         }
 
@@ -334,7 +325,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
         entry->path = strdup(valid_path);
         g_free(valid_path);
         g_free(owned_load_path);
-        free(full);
+        g_free(full);
         entry->format = fmt;
         entry->dict = loaded;
         if (loaded->icon_path) {
@@ -346,8 +337,7 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
         }
 
         if (head) {
-            entry->next = *head;
-            *head = entry;
+            *head = g_list_prepend(*head, entry);
         }
 
         g_free(family_key);
@@ -355,21 +345,198 @@ static void scan_recursive(const char *dirpath, DictEntry **head,
         g_free(fallback_path);
     }
 
-    closedir(d);
+    g_dir_close(dir);
+}
+
+static void discover_with_find(const char *dirpath, DictLoaderCallback callback, void *user_data, volatile gint *cancel_flag, gint expected_generation, GCancellable *cancellable) {
+    char *expanded = NULL;
+    if (dirpath[0] == '~') {
+        expanded = g_build_filename(g_get_home_dir(), dirpath + 1, NULL);
+    } else {
+        expanded = g_strdup(dirpath);
+    }
+
+    char *quoted_dir = g_shell_quote(expanded);
+    char *cmd = g_strdup_printf(
+        "find %s -maxdepth 5 -type f \\( "
+        "-iname \"*.mdx\" -o -iname \"*.dsl\" -o -iname \"*.dsl.dz\" -o "
+        "-iname \"*.ifo\" -o -iname \"*.bgl\" -o -iname \"*.slob\" \\) "
+        "-not -path \"*/node_modules/*\" -not -path \"*/.git/*\" "
+        "-not -path \"*/build/*\" -not -path \"*/dist/*\" "
+        "-not -path \"*/__pycache__/*\" 2>/dev/null",
+        quoted_dir);
+
+    gchar **argv = NULL;
+    g_shell_parse_argv(cmd, NULL, &argv, NULL);
+    
+    GError *err = NULL;
+    GSubprocessLauncher *launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+    GSubprocess *sub = g_subprocess_launcher_spawnv(launcher, (const gchar * const *)argv, &err);
+    g_strfreev(argv);
+    g_object_unref(launcher);
+    
+    g_free(expanded);
+    
+    if (!sub) {
+        if (err) g_error_free(err);
+        return;
+    }
+
+    GInputStream *stdout_stream = g_subprocess_get_stdout_pipe(sub);
+    GDataInputStream *dstream = g_data_input_stream_new(stdout_stream);
+
+    GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    char *line = NULL;
+    gsize line_len = 0;
+
+    while ((line = g_data_input_stream_read_line_utf8(dstream, &line_len, cancellable, NULL)) != NULL) {
+        if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) {
+            g_free(line);
+            break;
+        }
+
+        if (line[0] == '\0') {
+            g_free(line);
+            continue;
+        }
+
+        DictFormat fmt = dict_detect_format(line);
+        if (fmt == DICT_FORMAT_UNKNOWN) {
+            g_free(line);
+            continue;
+        }
+
+        const char *load_path = line;
+        char *family_key = NULL;
+        char *preferred_path = NULL;
+        char *fallback_path = NULL;
+
+        if (fmt == DICT_FORMAT_DSL && is_dsl_family_path(line)) {
+            family_key = dsl_family_key(line);
+            if (g_hash_table_contains(seen_dsl_families, family_key)) {
+                g_free(family_key);
+                g_free(line);
+                continue;
+            }
+            preferred_path = dsl_preferred_variant(line);
+            fallback_path = dsl_fallback_variant(preferred_path);
+            load_path = preferred_path;
+        }
+
+        if (callback) {
+            DictEntry discovery_entry = {0};
+            char *base = basename_noext(load_path);
+            discovery_entry.name = base;
+            discovery_entry.path = (char*)load_path;
+            discovery_entry.format = fmt;
+            callback(&discovery_entry, DICT_LOADER_EVENT_DISCOVERED, user_data);
+            free(base);
+        }
+
+        if (callback) {
+             callback(NULL, DICT_LOADER_EVENT_STARTED, user_data);
+        }
+
+        DictMmap *loaded = dict_load_any(load_path, fmt, cancel_flag, expected_generation);
+        if (!loaded && fallback_path && g_strcmp0(fallback_path, load_path) != 0) {
+            loaded = dict_load_any(fallback_path, fmt, cancel_flag, expected_generation);
+            if (loaded) {
+                load_path = fallback_path;
+            }
+        }
+        if (!loaded) {
+            if (callback) callback(NULL, DICT_LOADER_EVENT_FAILED, user_data);
+            g_free(family_key);
+            g_free(preferred_path);
+            g_free(fallback_path);
+            g_free(line);
+            continue;
+        }
+
+        if (family_key) {
+            g_hash_table_add(seen_dsl_families, family_key);
+            family_key = NULL;
+        }
+
+        DictEntry *entry = calloc(1, sizeof(DictEntry));
+        if (loaded->name && strlen(loaded->name) > 0) {
+            char *valid = g_utf8_make_valid(loaded->name, -1);
+            entry->name = strdup(valid);
+            g_free(valid);
+        } else {
+            char *base = basename_noext(load_path);
+            char *valid = g_utf8_make_valid(base, -1);
+            entry->name = strdup(valid);
+            g_free(valid);
+            free(base);
+        }
+
+        char *valid_path = g_utf8_make_valid(load_path, -1);
+        entry->path = strdup(valid_path);
+        g_free(valid_path);
+        entry->format = fmt;
+        entry->dict = loaded;
+        if (loaded->icon_path) {
+            entry->icon_path = strdup(loaded->icon_path);
+        }
+
+        if (callback) {
+            callback(entry, DICT_LOADER_EVENT_FINISHED, user_data);
+        }
+
+        g_free(family_key);
+        g_free(preferred_path);
+        g_free(fallback_path);
+        g_free(line);
+    }
+    
+    g_subprocess_force_exit(sub);
+    g_object_unref(dstream);
+    g_object_unref(sub);
+    g_hash_table_unref(seen_dsl_families);
 }
 
 DictEntry* dict_loader_scan_directory(const char *dirpath) {
-    DictEntry *head = NULL;
+    GList *head = NULL;
     GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    scan_recursive(dirpath, &head, NULL, NULL, seen_dsl_families, NULL, 0);
+    scan_recursive(dirpath, &head, NULL, NULL, seen_dsl_families, NULL, 0, 0);
     g_hash_table_destroy(seen_dsl_families);
-    return head;
+    
+    DictEntry *result = NULL;
+    if (head) {
+        result = (DictEntry*)head->data;
+        GList *curr = head;
+        while (curr->next) {
+            ((DictEntry*)curr->data)->next = (DictEntry*)curr->next->data;
+            curr = curr->next;
+        }
+        g_list_free(head);
+    }
+    return result;
 }
 
-void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallback callback, void *user_data, volatile gint *cancel_flag, gint expected_generation) {
-    GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    scan_recursive(dirpath, NULL, callback, user_data, seen_dsl_families, cancel_flag, expected_generation);
-    g_hash_table_destroy(seen_dsl_families);
+void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallback callback, void *user_data, volatile gint *cancel_flag, gint expected_generation, GCancellable *cancellable) {
+    if (!dirpath || !callback) return;
+
+    gboolean has_find = g_file_test("/usr/bin/find", G_FILE_TEST_EXISTS);
+
+    if (has_find) {
+        discover_with_find(dirpath, callback, user_data, cancel_flag, expected_generation, cancellable);
+    } else {
+        GList *head = NULL;
+        GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+        scan_recursive(dirpath, &head, callback, user_data, seen_dsl_families, cancel_flag, expected_generation, 0);
+
+        g_hash_table_unref(seen_dsl_families);
+
+        for (GList *l = head; l; l = l->next) {
+            dict_loader_free((DictEntry *)l->data);
+        }
+        g_list_free(head);
+    }
+    
+    callback(NULL, DICT_LOADER_EVENT_FINISHED, user_data);
 }
 
 void dict_loader_free(DictEntry *head) {

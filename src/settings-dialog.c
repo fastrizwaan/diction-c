@@ -274,14 +274,20 @@ static void on_add_directory_response(GObject *source, GAsyncResult *result, gpo
     if (file) {
         char *path = g_file_get_path(file);
         if (path) {
-            /* Add to configured directories and show a scanning dialog that
-             * lists discovered dictionaries and shows progress. After the
-             * scan completes we trigger a full reload. */
+            /* Add to settings so the main loader picks it up. */
             guint before = data->settings->dictionary_dirs->len;
             settings_add_directory(data->settings, path);
+
+            /* Show the scan dialog IMMEDIATELY before doing heavy UI work in the main window */
+            char **dirs = g_new0(char *, 2);
+            dirs[0] = g_strdup(path);
+            dirs[1] = NULL;
+            extern void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs, gboolean call_reload);
+            show_scan_dialog_for_dirs(data, dirs, 1, TRUE);
+
+            /* Update the dir list in preferences */
             update_dir_list(data);
-            update_dict_list(data);
-            update_group_list(data);
+
             char *name = g_path_get_basename(path);
             char *message = data->settings->dictionary_dirs->len > before
                 ? g_strdup_printf("Added folder: %s", name)
@@ -289,13 +295,8 @@ static void on_add_directory_response(GObject *source, GAsyncResult *result, gpo
             present_dictionary_feedback(data, 0, 0, 0, message);
             g_free(message);
             g_free(name);
-            /* Prepare single-entry dir array for scanner helper */
-            char **dirs = g_new0(char *, 2);
-            dirs[0] = g_strdup(path);
-            dirs[1] = NULL;
-            extern void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs, gboolean call_reload);
-            show_scan_dialog_for_dirs(data, dirs, 1, TRUE);
-             g_free(path);
+
+            g_free(path);
         }
         g_object_unref(file);
     } else if (error) {
@@ -617,7 +618,7 @@ static gpointer scan_thread_func(gpointer user_data) {
         st->event_type = (int)DICT_LOADER_EVENT_STARTED;
         g_idle_add(scan_idle_add_entry, st);
 
-        dict_loader_scan_directory_streaming(args->dirs[i], scan_worker_callback, ctx, &ctx->generation, expected);
+        dict_loader_scan_directory_streaming(args->dirs[i], scan_worker_callback, ctx, &ctx->generation, expected, NULL);
     }
 
     /* Signal completion */
@@ -739,6 +740,18 @@ void settings_scan_progress_notify(const char *path, int percent) {
 }
 
 /* Public helper used by handlers above */
+typedef struct {
+    void (*cb)(void*);
+    void *data;
+} ReloadArgs;
+
+static gboolean idle_reload_callback(gpointer user_data) {
+    ReloadArgs *a = user_data;
+    if (a->cb) a->cb(a->data);
+    g_free(a);
+    return G_SOURCE_REMOVE;
+}
+
 void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs, gboolean call_reload) {
     AdwDialog *dialog = adw_dialog_new();
     adw_dialog_set_title(dialog, "Scanning Dictionaries");
@@ -845,8 +858,13 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
 
         adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(data->dialog));
 
-        /* Kick off the main loader (will call back via settings_scan_notify) */
-        data->reload_callback(data->user_data);
+        /* Kick off the main loader ASYNCHRONOUSLY to let the dialog show first */
+        if (data->reload_callback) {
+            ReloadArgs *ra = g_new0(ReloadArgs, 1);
+            ra->cb = data->reload_callback;
+            ra->data = data->user_data;
+            g_idle_add(idle_reload_callback, ra);
+        }
 
         /* Free the dirs array passed in by caller (we duplicated the strings into ctx) */
         for (int i = 0; i < n_dirs; i++) g_free(dirs[i]);

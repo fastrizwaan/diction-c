@@ -2001,7 +2001,9 @@ static void on_dictionary_root_parent_changed(GFileMonitor *monitor,
 
 static void add_directory_monitor_recursive(const char *root_path,
                                             const char *dir_path,
-                                            GHashTable *seen_dirs) {
+                                            GHashTable *seen_dirs,
+                                            int depth) {
+    if (depth > 2) return;
     if (!root_path || !dir_path || !*dir_path) {
         return;
     }
@@ -2049,7 +2051,7 @@ static void add_directory_monitor_recursive(const char *root_path,
         while ((name = g_dir_read_name(dir)) != NULL) {
             char *child = g_build_filename(canonical_dir, name, NULL);
             if (g_file_test(child, G_FILE_TEST_IS_DIR)) {
-                add_directory_monitor_recursive(root_path, child, seen_dirs);
+                add_directory_monitor_recursive(root_path, child, seen_dirs, depth + 1);
             }
             g_free(child);
         }
@@ -2117,7 +2119,7 @@ static void refresh_dictionary_directory_monitors(void) {
         }
 
         ensure_dictionary_root_parent_monitor(root_path);
-        add_directory_monitor_recursive(root_path, root_path, seen_dirs);
+        add_directory_monitor_recursive(root_path, root_path, seen_dirs, 0);
         g_free(root_path);
     }
     g_hash_table_unref(seen_dirs);
@@ -2151,7 +2153,7 @@ static void on_dictionary_dir_changed(GFileMonitor *monitor,
                       event_type == G_FILE_MONITOR_EVENT_MOVED_IN)) {
         if (g_file_test(file_path, G_FILE_TEST_IS_DIR)) {
             GHashTable *seen_dirs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-            add_directory_monitor_recursive(root_path, file_path, seen_dirs);
+            add_directory_monitor_recursive(root_path, file_path, seen_dirs, 0);
             g_hash_table_unref(seen_dirs);
         }
     }
@@ -2167,7 +2169,7 @@ static void on_dictionary_dir_changed(GFileMonitor *monitor,
         char *other_path = g_file_get_path(other_file);
         if (other_path && g_file_test(other_path, G_FILE_TEST_IS_DIR)) {
             GHashTable *seen_dirs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-            add_directory_monitor_recursive(root_path, other_path, seen_dirs);
+            add_directory_monitor_recursive(root_path, other_path, seen_dirs, 0);
             g_hash_table_unref(seen_dirs);
         }
         g_free(other_path);
@@ -2197,7 +2199,7 @@ static void on_dictionary_root_parent_changed(GFileMonitor *monitor,
 
     if (g_file_test(root_path, G_FILE_TEST_IS_DIR)) {
         GHashTable *seen_dirs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        add_directory_monitor_recursive(root_path, root_path, seen_dirs);
+        add_directory_monitor_recursive(root_path, root_path, seen_dirs, 0);
         g_hash_table_unref(seen_dirs);
     } else {
         remove_directory_monitor_subtree(root_path);
@@ -4028,6 +4030,10 @@ static void apply_font_to_webview(void *user_data) {
 
 static GMutex dict_loader_mutex;
 static volatile gint loader_generation = 0;
+
+static GMutex loader_cancel_mutex;
+static GCancellable *loader_cancellable = NULL;
+
 static void reload_dictionaries_from_settings(void *user_data);
 
 static gboolean reload_dictionaries_from_settings_idle(gpointer user_data) {
@@ -4090,6 +4096,11 @@ static void reload_dictionaries_from_settings(void *user_data) {
 /* Request cancellation of the current loader generation (called from UI). */
 void request_loader_cancel(void) {
     g_atomic_int_inc(&loader_generation);
+    g_mutex_lock(&loader_cancel_mutex);
+    if (loader_cancellable) {
+        g_cancellable_cancel(loader_cancellable);
+    }
+    g_mutex_unlock(&loader_cancel_mutex);
 }
 
 static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded) {
@@ -4367,6 +4378,111 @@ static void loader_add_candidate_path(const char *path,
     g_free(family_key);
 }
 
+extern void settings_scan_notify(const char *name, const char *path, int event_type);
+
+static void collect_dictionary_candidate_paths_with_find(const char *dirpath,
+                                                        GPtrArray *out_paths,
+                                                        GHashTable *seen_paths,
+                                                        GHashTable *seen_dsl_families,
+                                                        GHashTable *ignored_paths,
+                                                        gint generation,
+                                                        GCancellable *cancellable) {
+    if (!dirpath || !out_paths) return;
+
+    char *expanded = NULL;
+    if (dirpath[0] == '~') {
+        expanded = g_build_filename(g_get_home_dir(), dirpath + 1, NULL);
+    } else {
+        expanded = g_strdup(dirpath);
+    }
+
+    /* Use GSubprocess to run 'find'. Skip heavy folders. 
+     * Use -iname for case-insensitivity and -maxdepth 5. */
+    GPtrArray *argv_array = g_ptr_array_new();
+    g_ptr_array_add(argv_array, g_strdup("find"));
+    g_ptr_array_add(argv_array, g_strdup(expanded));
+    g_ptr_array_add(argv_array, g_strdup("-maxdepth"));
+    g_ptr_array_add(argv_array, g_strdup("5"));
+    g_ptr_array_add(argv_array, g_strdup("-type"));
+    g_ptr_array_add(argv_array, g_strdup("f"));
+    g_ptr_array_add(argv_array, g_strdup("("));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.mdx"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.dsl"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.dsl.dz"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.ifo"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.bgl"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.slob"));
+    g_ptr_array_add(argv_array, g_strdup(")"));
+    g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/node_modules/*"));
+    g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/.git/*"));
+    g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/build/*"));
+    g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/dist/*"));
+    g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/__pycache__/*"));
+    g_ptr_array_add(argv_array, NULL);
+
+    gchar **argv = (gchar **)g_ptr_array_free(argv_array, FALSE);
+    
+    GError *err = NULL;
+    GSubprocessLauncher *launcher = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE);
+    GSubprocess *sub = g_subprocess_launcher_spawnv(launcher, (const gchar * const *)argv, &err);
+    g_strfreev(argv);
+    g_object_unref(launcher);
+    
+    g_free(expanded);
+    
+    if (!sub) {
+        if (err) {
+            fprintf(stderr, "[LOADER] GSubprocess failed: %s\n", err->message);
+            g_error_free(err);
+        }
+        return;
+    }
+
+    GInputStream *stdout_stream = g_subprocess_get_stdout_pipe(sub);
+    GDataInputStream *dstream = g_data_input_stream_new(stdout_stream);
+
+    int count = 0;
+    char *line = NULL;
+    gsize length = 0;
+    while ((line = g_data_input_stream_read_line_utf8(dstream, &length, cancellable, NULL)) != NULL) {
+        if (generation != g_atomic_int_get(&loader_generation)) {
+            g_free(line);
+            break;
+        }
+        if (g_cancellable_is_cancelled(cancellable)) {
+            g_free(line);
+            break;
+        }
+        if (line[0] == '\0') {
+            g_free(line);
+            continue;
+        }
+
+        count++;
+        guint before = out_paths->len;
+        loader_add_candidate_path(line, out_paths, seen_paths, seen_dsl_families, ignored_paths);
+        if (out_paths->len > before) {
+            const char *new_path = g_ptr_array_index(out_paths, out_paths->len - 1);
+            char *b = g_path_get_basename(new_path);
+            settings_scan_notify(b, new_path, DICT_LOADER_EVENT_DISCOVERED);
+            g_free(b);
+        }
+        g_free(line);
+    }
+
+    /* Force kill the subprocess so it doesn't linger reading a dead mount */
+    g_subprocess_force_exit(sub);
+    g_object_unref(dstream);
+    g_object_unref(sub);
+
+    fprintf(stderr, "[LOADER] Discovery found %d raw candidates\n", count);
+}
+
 static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
                                                          GPtrArray *out_paths,
                                                          GHashTable *seen_paths,
@@ -4377,10 +4493,8 @@ static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
     if (!dirpath || !out_paths || depth > 5) {
         return;
     }
-
-    if (generation != g_atomic_int_get(&loader_generation)) {
-        return;
-    }
+    /* Fallback to C recursive scanner if find is not used or fails */
+    if (generation != g_atomic_int_get(&loader_generation)) return;
 
     char *expanded = NULL;
     if (dirpath[0] == '~') {
@@ -4391,15 +4505,12 @@ static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
 
     GDir *dir = g_dir_open(expanded, 0, NULL);
     g_free(expanded);
-    if (!dir) {
-        return;
-    }
+    if (!dir) return;
 
     const char *name = NULL;
     while ((name = g_dir_read_name(dir)) != NULL) {
-        if (name[0] == '.') {
-            continue;
-        }
+        if (name[0] == '.') continue;
+        if (generation != g_atomic_int_get(&loader_generation)) break;
 
         char *full = g_build_filename(dirpath, name, NULL);
         if (g_file_test(full, G_FILE_TEST_IS_DIR)) {
@@ -4415,14 +4526,18 @@ static void collect_dictionary_candidate_paths_recursive(const char *dirpath,
                                                             seen_paths, seen_dsl_families,
                                                             ignored_paths, generation, depth + 1);
             }
-            g_free(full);
-            continue;
+        } else {
+            guint before = out_paths->len;
+            loader_add_candidate_path(full, out_paths, seen_paths, seen_dsl_families, ignored_paths);
+            if (out_paths->len > before) {
+                const char *new_path = g_ptr_array_index(out_paths, out_paths->len - 1);
+                char *b = g_path_get_basename(new_path);
+                settings_scan_notify(b, new_path, DICT_LOADER_EVENT_DISCOVERED);
+                g_free(b);
+            }
         }
-
-        loader_add_candidate_path(full, out_paths, seen_paths, seen_dsl_families, ignored_paths);
         g_free(full);
     }
-
     g_dir_close(dir);
 }
 
@@ -4747,9 +4862,18 @@ static gpointer dict_load_thread(gpointer user_data) {
     GHashTable *seen_paths = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     GHashTable *seen_dsl_families = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
+    g_mutex_lock(&loader_cancel_mutex);
+    if (loader_cancellable) {
+        g_object_unref(loader_cancellable);
+    }
+    loader_cancellable = g_cancellable_new();
+    GCancellable *cancellable = g_object_ref(loader_cancellable);
+    g_mutex_unlock(&loader_cancel_mutex);
+
     g_mutex_lock(&dict_loader_mutex);
     if (args->generation != g_atomic_int_get(&loader_generation)) {
         g_mutex_unlock(&dict_loader_mutex);
+        g_object_unref(cancellable);
         goto cleanup;
     }
 
@@ -4759,21 +4883,24 @@ static gpointer dict_load_thread(gpointer user_data) {
                                   args->ignored_paths);
     }
 
+    gboolean has_find = g_file_test("/usr/bin/find", G_FILE_TEST_EXISTS);
     for (int i = 0; i < args->n_dirs; i++) {
         if (args->generation != g_atomic_int_get(&loader_generation)) break;
-        collect_dictionary_candidate_paths_recursive(args->dirs[i], candidate_paths,
-                                                    seen_paths, seen_dsl_families,
-                                                    args->ignored_paths, args->generation, 0);
+        if (g_cancellable_is_cancelled(cancellable)) break;
+        if (has_find) {
+            collect_dictionary_candidate_paths_with_find(args->dirs[i], candidate_paths,
+                                                        seen_paths, seen_dsl_families,
+                                                        args->ignored_paths, args->generation, cancellable);
+        } else {
+            collect_dictionary_candidate_paths_recursive(args->dirs[i], candidate_paths,
+                                                        seen_paths, seen_dsl_families,
+                                                        args->ignored_paths, args->generation, 0);
+        }
     }
+    
+    g_object_unref(cancellable);
 
-    /* Inform settings scan dialog of discovered candidates */
-    extern void settings_scan_notify(const char *name, const char *path, int event_type);
-    for (guint i = 0; i < candidate_paths->len; i++) {
-        const char *p = g_ptr_array_index(candidate_paths, i);
-        char *b = g_path_get_basename(p);
-        settings_scan_notify(b, p, DICT_LOADER_EVENT_DISCOVERED);
-        g_free(b);
-    }
+    /* Discovery happens and notifies incrementally in collectors now */
 
     guint total_candidates = candidate_paths->len;
     queue_loader_idle(LOAD_IDLE_STATUS, args->generation, 0, total_candidates,

@@ -1,5 +1,6 @@
 #pragma once
 #include <glib.h>
+#include <gio/gio.h>
 #include "dict-mmap.h"
 #include <stddef.h>
 
@@ -45,7 +46,8 @@ void dict_loader_scan_directory_streaming(const char *dirpath,
                                            DictLoaderCallback callback, 
                                            void *user_data,
                                            volatile gint *cancel_flag,
-                                           gint expected_generation);
+                                           gint expected_generation,
+                                           GCancellable *cancellable);
 
 /* Free all entries in a DictEntry linked list */
 void dict_loader_free(DictEntry *head);
