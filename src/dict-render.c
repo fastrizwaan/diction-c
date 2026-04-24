@@ -593,26 +593,47 @@ char *normalize_headword_for_render(const char *text, size_t length, gboolean ke
     char *valid = g_utf8_make_valid(raw, -1);
     GString *out = g_string_new("");
     const char *p = valid;
+    static const char *brace_patterns[] = {
+        "{*}",
+        "{·}",
+        "{ˈ}",
+        "{ˌ}",
+        "{[']}",
+        "{[/']}"
+    };
 
     while (*p) {
         if (*p == '{') {
-            const char *br = strchr(p, '}');
-            if (br) {
-                if (keep_middle_dot) {
-                    /* Special case: hide braces but show content for some markers */
-                    if (g_str_has_prefix(p + 1, "·") && p[1 + strlen("·")] == '}') {
+            size_t brace_tag_len = 0;
+            for (guint i = 0; i < G_N_ELEMENTS(brace_patterns); i++) {
+                if (g_str_has_prefix(p, brace_patterns[i])) {
+                    brace_tag_len = strlen(brace_patterns[i]);
+                    break;
+                }
+            }
+
+            if (brace_tag_len > 0) {
+                if (g_str_has_prefix(p, "{[/']}")) {
+                    g_string_append(out, "\xCC\x81");
+                } else if (keep_middle_dot) {
+                    if (g_str_has_prefix(p, "{·}")) {
                         g_string_append(out, "·");
-                    } else if (g_str_has_prefix(p + 1, "*") && p[2] == '}') {
+                    } else if (g_str_has_prefix(p, "{*}")) {
                         g_string_append(out, "*");
-                    } else if (g_str_has_prefix(p + 1, "ˈ") && p[1 + strlen("ˈ")] == '}') {
+                    } else if (g_str_has_prefix(p, "{ˈ}")) {
                         g_string_append(out, "ˈ");
-                    } else if (g_str_has_prefix(p + 1, "ˌ") && p[1 + strlen("ˌ")] == '}') {
+                    } else if (g_str_has_prefix(p, "{ˌ}")) {
                         g_string_append(out, "ˌ");
                     }
                 }
-                p = br + 1;
+                p += brace_tag_len;
                 continue;
             }
+            p++;
+            continue;
+        }
+
+        if (*p == '}') {
             p++;
             continue;
         }
@@ -641,13 +662,24 @@ char *normalize_headword_for_render(const char *text, size_t length, gboolean ke
             continue;
         }
 
-        if (*p == '}') { p++; continue; }
+
+
+        if (g_str_has_prefix(p, "ˈ") || g_str_has_prefix(p, "ˌ")) {
+            p += 2; continue;
+        }
 
         if (*p == '\\' && p[1] != '\0') {
-            const char *next = p + 1;
-            const char *next_end = g_utf8_next_char(next);
-            g_string_append_len(out, next, next_end - next);
-            p = next_end;
+            const char *special = " {}~\\@#()[]<>;";
+            if (strchr(special, p[1])) {
+                const char *next = p + 1;
+                const char *next_end = g_utf8_next_char(next);
+                g_string_append_len(out, next, next_end - next);
+                p = next_end;
+            } else {
+                /* Not special, keep the backslash */
+                g_string_append_c(out, '\\');
+                p++;
+            }
             continue;
         }
 
@@ -2714,7 +2746,7 @@ char* dsl_render_to_html(const char *dsl_text,
                      }
                  }
                  else if (tag_len == 1 && tag[0] == 'c') {
-                     /* Bare [c] appears in some BGL content as a no-op marker. */
+                     if (!in_media) push_tag(&b, "c", "<span class='pos'>", "</span>", active_tags, &num_active_tags);
                  }
                  else if (tag_len == 2 && strncmp(tag, "/c", 2) == 0) {
                      if (!in_media) close_tag(&b, "c", active_tags, &num_active_tags);

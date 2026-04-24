@@ -6,9 +6,72 @@
 #include <glib.h>
 #include <glib/gstdio.h>
 #include <gio/gio.h>
+#include "dict-mmap.h"
 
 static gboolean path_is_inside_dir(const char *path, const char *dir_path);
 static GPtrArray *settings_collect_mdx_companion_paths(const char *mdx_path);
+static gboolean ends_with_ci(const char *text, const char *suffix);
+
+static char *settings_fallback_dictionary_name(const char *path) {
+    char *basename = g_path_get_basename(path ? path : "");
+    if (!basename) {
+        return g_strdup(path ? path : "");
+    }
+
+    if (ends_with_ci(basename, ".dsl.dz")) {
+        basename[strlen(basename) - 7] = '\0';
+    } else {
+        char *ext = strrchr(basename, '.');
+        if (ext) {
+            *ext = '\0';
+        }
+    }
+
+    return basename;
+}
+
+char* settings_resolve_dictionary_name(const char *path) {
+    if (!path || !*path) {
+        return g_strdup("");
+    }
+
+    DictFormat fmt = dict_detect_format(path);
+    DictMmap *dict = NULL;
+
+    switch (fmt) {
+        case DICT_FORMAT_DSL:
+            dict = dict_mmap_open(path, NULL, 0);
+            break;
+        case DICT_FORMAT_STARDICT:
+            dict = parse_stardict(path, NULL, 0);
+            break;
+        case DICT_FORMAT_MDX:
+            dict = parse_mdx_file(path, NULL, 0);
+            break;
+        case DICT_FORMAT_BGL:
+            dict = parse_bgl_file(path, NULL, 0);
+            break;
+        case DICT_FORMAT_SLOB:
+            dict = parse_slob_file(path, NULL, 0);
+            break;
+        default:
+            break;
+    }
+
+    if (dict && dict->name && *dict->name) {
+        char *valid = g_utf8_make_valid(dict->name, -1);
+        char *resolved = g_strdup(valid);
+        g_free(valid);
+        dict_mmap_close(dict);
+        return resolved;
+    }
+
+    if (dict) {
+        dict_mmap_close(dict);
+    }
+
+    return settings_fallback_dictionary_name(path);
+}
 
 static const char* get_config_dir(void) {
     static const char *config_dir = NULL;
@@ -1048,11 +1111,7 @@ gboolean settings_import_dictionary(AppSettings *settings, const char *src_path)
     gboolean src_in_watched_dir = settings_path_is_in_directory_list(settings, src_path);
 
     if (src_in_managed_dir) {
-        char *name = g_path_get_basename(src_path);
-        char *ext = strrchr(name, '.');
-        if (ext) {
-            *ext = '\0';
-        }
+        char *name = settings_resolve_dictionary_name(src_path);
 
         if (existing_cfg) {
             char *old_id = g_strdup(existing_cfg->id);
@@ -1250,11 +1309,7 @@ gboolean settings_import_dictionary(AppSettings *settings, const char *src_path)
     g_free(src_cache);
     g_free(dst_cache);
 
-    char *name = g_path_get_basename(dest);
-    char *ext = strrchr(name, '.');
-    if (ext) {
-        *ext = '\0';
-    }
+    char *name = settings_resolve_dictionary_name(dest);
 
     if (existing_cfg) {
         char *old_id = g_strdup(existing_cfg->id);

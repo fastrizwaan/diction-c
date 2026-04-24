@@ -970,9 +970,7 @@ static void on_add_dictionary_file_response(GObject *source, GAsyncResult *resul
             GFile *file = G_FILE(obj);
             char *path = g_file_get_path(file);
             if (path) {
-                char *name = g_path_get_basename(path);
-                char *ext = strrchr(name, '.');
-                if (ext) *ext = '\0';
+                char *name = settings_resolve_dictionary_name(path);
                 settings_add_dictionary(data->settings, name, path);
                 g_ptr_array_add(added_names, g_strdup(name));
                 g_free(name);

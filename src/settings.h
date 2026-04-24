@@ -77,3 +77,4 @@ void settings_prune_directory_dictionaries(AppSettings *settings, GHashTable *lo
 gboolean settings_path_is_in_directory_list(AppSettings *settings, const char *path);
 gboolean settings_is_dictionary_ignored(AppSettings *settings, const char *path);
 void settings_set_dictionary_ignored(AppSettings *settings, const char *path, gboolean ignored);
+char* settings_resolve_dictionary_name(const char *path);

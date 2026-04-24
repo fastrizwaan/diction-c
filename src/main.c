@@ -453,7 +453,10 @@ static void apply_font_to_webview(void *user_data);
 typedef struct {
     char *query;
     char *query_key;
+    char *query_compact_key;
     guint query_len;
+    guint query_compact_len;
+    gboolean skip_fast_prefilter;
     GHashTable *seen_words;
     DictEntry *current_entry;
     DictEntry *current_dict;
@@ -768,6 +771,49 @@ static gboolean text_has_replacement_char(const char *text) {
     return text && strstr(text, "\xEF\xBF\xBD") != NULL;
 }
 
+static gboolean dsl_headword_is_escapable_char(char c) {
+    return c != '\0' && strchr(" {}~\\@#()[]<>;", c) != NULL;
+}
+
+static size_t dsl_headword_brace_tag_len(const char *text) {
+    static const char *patterns[] = {
+        "{*}",
+        "{·}",
+        "{ˈ}",
+        "{ˌ}",
+        "{[']}",
+        "{[/']}"
+    };
+
+    if (!text || text[0] != '{') {
+        return 0;
+    }
+
+    for (guint i = 0; i < G_N_ELEMENTS(patterns); i++) {
+        if (g_str_has_prefix(text, patterns[i])) {
+            return strlen(patterns[i]);
+        }
+    }
+
+    return 0;
+}
+
+static gboolean search_query_needs_literal_prefilter_bypass(const char *query) {
+    if (!query) {
+        return FALSE;
+    }
+
+    for (const char *p = query; *p; p = g_utf8_next_char(p)) {
+        gunichar ch = g_utf8_get_char(p);
+        if (g_unichar_isspace(ch) || g_unichar_isalnum(ch)) {
+            continue;
+        }
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 static char *normalize_headword_for_search(const char *value, gboolean unescape_dsl) {
     if (!value) {
         return NULL;
@@ -778,16 +824,16 @@ static char *normalize_headword_for_search(const char *value, gboolean unescape_
     const char *p = valid;
 
     while (*p) {
-        /* Support block-skipping for curly braces {...} - identical to indexer logic */
         if (*p == '{') {
-            const char *br = strchr(p, '}');
-            if (br) {
-                p = br + 1;
+            size_t brace_tag_len = dsl_headword_brace_tag_len(p);
+            if (brace_tag_len > 0) {
+                p += brace_tag_len;
                 continue;
             }
-            /* Unclosed brace, skip just the '{' */
-            p++;
-            continue;
+            if (unescape_dsl) {
+                p++;
+                continue;
+            }
         }
 
         /* Raw DSL markers that should be ignored even outside of braces */
@@ -799,6 +845,12 @@ static char *normalize_headword_for_search(const char *value, gboolean unescape_
             continue;
         }
 
+        /* UTF-8 Stress marks (IPA CB 88, CB 8C) */
+        if ((unsigned char)p[0] == 0xCB && ((unsigned char)p[1] == 0x88 || (unsigned char)p[1] == 0x8C)) {
+            p += 2;
+            continue;
+        }
+
         /* DSL-specific square bracket tags in headwords (rare handles formatting) */
         if (g_str_has_prefix(p, "[']")) { p += 3; continue; }
         if (g_str_has_prefix(p, "[/']")) { p += 4; continue; }
@@ -806,19 +858,17 @@ static char *normalize_headword_for_search(const char *value, gboolean unescape_
         /* Strip actual Unicode combining acute accent (U+0301) for search */
         if (g_str_has_prefix(p, "\xCC\x81")) { p += 2; continue; }
 
-        /* Literal close brace (shouldn't happen with our block skip, but safety first) */
-        if (*p == '}') {
+        if (*p == '}' && unescape_dsl) {
             p++;
             continue;
         }
 
+
+
         if (*p == '\\' && p[1] != '\0') {
             if (unescape_dsl) {
-                /* DSL mandatory special characters that MUST be unescaped:
-                 * { } \ ~ @ # ( ) [ ] < >. Any other character (like / in \/)
-                 * is NOT unescaped to preserve leet speak patterns. */
-                const char *special = " {}~\\@#()[]<>";
-                if (strchr(special, p[1])) {
+                /* Only unescape DSL control escapes; preserve literal leet/backslash patterns. */
+                if (dsl_headword_is_escapable_char(p[1])) {
                     const char *next = p + 1;
                     const char *next_end = g_utf8_next_char(next);
                     g_string_append_len(out, next, next_end - next);
@@ -966,6 +1016,49 @@ static double sequence_matcher_ratio(const char *str_a, const char *str_b) {
     return (2.0 * matches) / (double)(len_a_chars + len_b_chars);
 }
 
+static const char *candidate_key_without_definite_article(const char *candidate_key) {
+    if (!candidate_key) {
+        return NULL;
+    }
+
+    if (g_str_has_prefix(candidate_key, "the ")) {
+        return candidate_key + 4;
+    }
+
+    return NULL;
+}
+
+static int search_bucket_rank(SearchBucket bucket) {
+    return (int)bucket;
+}
+
+static char *collapse_search_separators(const char *text) {
+    if (!text) {
+        return NULL;
+    }
+
+    GString *out = g_string_sized_new(strlen(text));
+    gboolean changed = FALSE;
+
+    for (const char *p = text; *p; p = g_utf8_next_char(p)) {
+        gunichar ch = g_utf8_get_char(p);
+        if (g_unichar_isspace(ch) || ch == '-' || ch == '_' || ch == '/' || ch == '.' || ch == 0x00B7) {
+            changed = TRUE;
+            continue;
+        }
+
+        const char *next = g_utf8_next_char(p);
+        g_string_append_len(out, p, next - p);
+    }
+
+    if (!changed) {
+        g_string_free(out, TRUE);
+        return NULL;
+    }
+
+    return g_string_free(out, FALSE);
+}
+
 static gboolean classify_search_candidate(const char *query_key,
                                           guint query_len,
                                           const char *candidate_key,
@@ -1065,6 +1158,73 @@ static gboolean classify_search_candidate(const char *query_key,
     return TRUE;
 }
 
+static gboolean classify_search_candidate_flexible(const char *query_key,
+                                                   guint query_len,
+                                                   const char *query_compact_key,
+                                                   guint query_compact_len,
+                                                   const char *candidate_key,
+                                                   SearchBucket *bucket_out,
+                                                   double *fuzzy_score_out) {
+    SearchBucket best_bucket = SEARCH_BUCKET_FUZZY;
+    double best_score = 0.0;
+    gboolean found = classify_search_candidate(query_key, query_len, candidate_key, &best_bucket, &best_score);
+
+    const char *articleless = candidate_key_without_definite_article(candidate_key);
+    if (articleless && *articleless) {
+        SearchBucket alt_bucket = SEARCH_BUCKET_FUZZY;
+        double alt_score = 0.0;
+        gboolean alt_found = classify_search_candidate(query_key, query_len, articleless, &alt_bucket, &alt_score);
+        if (alt_found &&
+            (!found ||
+             search_bucket_rank(alt_bucket) < search_bucket_rank(best_bucket) ||
+             (search_bucket_rank(alt_bucket) == search_bucket_rank(best_bucket) && alt_score > best_score))) {
+            best_bucket = alt_bucket;
+            best_score = alt_score;
+            found = TRUE;
+        }
+    }
+
+    if (query_compact_key && *query_compact_key) {
+        char *compact_candidate = collapse_search_separators(candidate_key);
+        if (compact_candidate && *compact_candidate) {
+            SearchBucket alt_bucket = SEARCH_BUCKET_FUZZY;
+            double alt_score = 0.0;
+            gboolean alt_found = classify_search_candidate(query_compact_key, query_compact_len, compact_candidate, &alt_bucket, &alt_score);
+            if (alt_found &&
+                (!found ||
+                 search_bucket_rank(alt_bucket) < search_bucket_rank(best_bucket) ||
+                 (search_bucket_rank(alt_bucket) == search_bucket_rank(best_bucket) && alt_score > best_score))) {
+                best_bucket = alt_bucket;
+                best_score = alt_score;
+                found = TRUE;
+            }
+
+            const char *compact_articleless = candidate_key_without_definite_article(compact_candidate);
+            if (compact_articleless && *compact_articleless) {
+                alt_bucket = SEARCH_BUCKET_FUZZY;
+                alt_score = 0.0;
+                alt_found = classify_search_candidate(query_compact_key, query_compact_len, compact_articleless, &alt_bucket, &alt_score);
+                if (alt_found &&
+                    (!found ||
+                     search_bucket_rank(alt_bucket) < search_bucket_rank(best_bucket) ||
+                     (search_bucket_rank(alt_bucket) == search_bucket_rank(best_bucket) && alt_score > best_score))) {
+                    best_bucket = alt_bucket;
+                    best_score = alt_score;
+                    found = TRUE;
+                }
+            }
+        }
+        g_free(compact_candidate);
+    }
+
+    if (found) {
+        if (bucket_out) *bucket_out = best_bucket;
+        if (fuzzy_score_out) *fuzzy_score_out = best_score;
+    }
+
+    return found;
+}
+
 
 static char *get_app_config_file_path(const char *filename) {
     char *dir = g_build_filename(g_get_user_config_dir(), "diction", NULL);
@@ -1087,6 +1247,7 @@ static void sidebar_search_state_free(SidebarSearchState *state) {
     }
     g_free(state->query);
     g_free(state->query_key);
+    g_free(state->query_compact_key);
     if (state->seen_words) {
         g_hash_table_unref(state->seen_words);
     }
@@ -1496,15 +1657,26 @@ static gboolean fast_strncasestr(const char *haystack, size_t haystack_len, cons
         size_t n_idx = 0;
         
         while (h_idx < haystack_len && n_idx < needle_len) {
-            char hc = haystack[h_idx];
+            unsigned char hc = (unsigned char)haystack[h_idx];
             
-            /* Fast-skip common DSL formatting characters, punctuation and whitespace during the match */
-            if (g_ascii_isspace(hc) || 
-                hc == '{' || hc == '}' || hc == '\\' || hc == '~' || 
+            /* Fast-skip DSL formatting characters during the match, but preserve
+             * real spaces so phrase queries like "world bank" still line up. */
+            if (hc == '{' || hc == '}' || hc == '\\' || hc == '~' || 
                 hc == '/' || hc == ',' || hc == '.' || hc == '-' || 
-                hc == '(' || hc == ')' || hc == '[' || hc == ']' || hc == '_') {
+                hc == '(' || hc == ')' || hc == '[' || hc == ']' || hc == '_' ||
+                hc == '*') {
                 h_idx++;
                 continue;
+            }
+
+            if (h_idx + 1 < haystack_len) {
+                unsigned char hc1 = (unsigned char)haystack[h_idx + 1];
+                if ((hc == 0xC2 && hc1 == 0xB7) ||     /* U+00B7 Middle Dot */
+                    (hc == 0xCB && (hc1 == 0x88 || hc1 == 0x8C)) || /* U+02C8, U+02CC */
+                    (hc == 0xCC && hc1 == 0x81)) {    /* U+0301 Combining Acute Accent */
+                    h_idx += 2;
+                    continue;
+                }
             }
             
             char nc = needle[n_idx];
@@ -1635,7 +1807,8 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             }
 
             // FAST PRE-FILTER (zero alloc, length-safe)
-            if (!fast_strncasestr(state->current_dict->dict->data + node->h_off, node->h_len, state->query)) {
+            if (!state->skip_fast_prefilter &&
+                !fast_strncasestr(state->current_dict->dict->data + node->h_off, node->h_len, state->query)) {
                 processed++;
                 if ((processed & 63) == 0) {
                     if (g_get_monotonic_time() > deadline_us)
@@ -1664,7 +1837,9 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             bucket = SEARCH_BUCKET_SUBSTRING;
             fuzzy_score = 1.0;
         } else {
-            is_valid_match = classify_search_candidate(state->query_key, state->query_len, word_key, &bucket, &fuzzy_score);
+            is_valid_match = classify_search_candidate_flexible(state->query_key, state->query_len,
+                                                                state->query_compact_key, state->query_compact_len,
+                                                                word_key, &bucket, &fuzzy_score);
         }
 
         if (is_valid_match) {
@@ -1673,8 +1848,8 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                     payload->type = RELATED_ROW_CANDIDATE;
                     
                     /* Use rendering normalization for display in sidebar (strip dots) */
-                    char *display_word = normalize_headword_for_render(word, node->h_len, FALSE);
-                    payload->word = display_word; 
+                    char *display_word = normalize_headword_for_render(word, node->h_len, TRUE);
+                    payload->word = g_strdup(word);
                     
                     payload->fuzzy_score = fuzzy_score;
                     g_hash_table_add(state->seen_words, g_strdup(word_key));
@@ -1683,7 +1858,6 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                 if (b >= 0 && b < BUCKET_COUNT) {
                     g_ptr_array_add(state->global_bucket_labels[b], display_word); 
                     g_ptr_array_add(state->global_bucket_payloads[b], payload);
-                    clean_word = NULL;
                     display_word = NULL;
 
                     // 🔥 PROGRESSIVE FLUSH (per bucket)
@@ -1764,9 +1938,9 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
 
             char *raw_word = g_strndup(entry->dict->data + node->h_off, node->h_len);
             char *clean_word = normalize_headword_for_search(raw_word, TRUE);
-            g_free(raw_word);
 
             if (!clean_word || text_has_replacement_char(clean_word)) {
+                g_free(raw_word);
                 if (clean_word) g_free(clean_word);
                 pos++;
                 if (pos >= flat_index_count(entry->dict->index)) break;
@@ -1777,27 +1951,31 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
             SearchBucket bucket;
             double score;
 
-            if (classify_search_candidate(state->query_key, state->query_len, word_key, &bucket, &score)) {
+            if (classify_search_candidate_flexible(state->query_key, state->query_len,
+                                                   state->query_compact_key, state->query_compact_len,
+                                                   word_key, &bucket, &score)) {
                 if (bucket == SEARCH_BUCKET_EXACT || bucket == SEARCH_BUCKET_PREFIX) {
                     if (!g_hash_table_contains(state->seen_words, word_key)) {
+                        char *display_word = normalize_headword_for_render(raw_word, node->h_len, TRUE);
                         RelatedRowPayload *payload = g_new0(RelatedRowPayload, 1);
                         payload->type = RELATED_ROW_CANDIDATE;
-                        payload->word = clean_word;
+                        payload->word = g_strdup(raw_word);
                         payload->fuzzy_score = score;
 
                         g_hash_table_add(state->seen_words, g_strdup(word_key));
-                        g_ptr_array_add(labels, clean_word);
+                        g_ptr_array_add(labels, display_word);
                         g_ptr_array_add(payloads, payload);
                         added++;
-                        clean_word = NULL;
                     }
                 } else {
+                    g_free(raw_word);
                     g_free(word_key);
                     if (clean_word) g_free(clean_word);
                     break;
                 }
             }
 
+            g_free(raw_word);
             if (clean_word) g_free(clean_word);
             g_free(word_key);
             pos++;
@@ -1836,6 +2014,9 @@ static void populate_search_sidebar(const char *query) {
     sidebar_search_state->query = clean ? clean : g_strdup("");
     sidebar_search_state->query_key = g_utf8_casefold(sidebar_search_state->query, -1);
     sidebar_search_state->query_len = utf8_length_or_bytes(sidebar_search_state->query_key);
+    sidebar_search_state->query_compact_key = collapse_search_separators(sidebar_search_state->query_key);
+    sidebar_search_state->query_compact_len = utf8_length_or_bytes(sidebar_search_state->query_compact_key);
+    sidebar_search_state->skip_fast_prefilter = search_query_needs_literal_prefilter_bypass(sidebar_search_state->query);
     
     if (sidebar_search_state->is_fts && strlen(sidebar_search_state->query) > 0) {
         GError *err = NULL;
@@ -3304,35 +3485,22 @@ static void set_tab_metadata(WebKitWebView *wv, const char *query, const char *t
     }
 }
 
-static void render_query_to_webview(const char *query_raw, WebKitWebView *target_wv, gboolean push_history) {
-    if (!target_wv) return;
-
-    char *query = normalize_headword_for_search(query_raw, FALSE);
-    
-    /* Strip FTS prefix for headword matching in the renderer */
-    if (query && g_str_has_prefix(query, "* ")) {
-        char *stripped = g_strdup(query + 2);
-        g_free(query);
-        query = stripped;
+static char *exact_lookup_definite_article_variant(const char *query) {
+    if (!query || !*query) {
+        return NULL;
     }
 
-    if (!query || strlen(query) == 0) {
-        render_idle_page_to_webview(target_wv, "Diction", "Start typing to search...");
-        set_tab_metadata(target_wv, "", "Diction", 0);
-        g_free(query);
-        return;
+    if (g_ascii_strncasecmp(query, "the ", 4) == 0) {
+        return NULL;
     }
 
-    GString *html_res = g_string_new("<html><body>");
-    char *escaped_query_attr = safe_markup_escape_n(query, -1);
-    g_string_append_printf(html_res, "<div class='word-group' data-word='%s'>", escaped_query_attr);
-    g_free(escaped_query_attr);
+    return g_strdup_printf("the %s", query);
+}
 
+static int append_exact_matches_html(GString *html_res, const char *query) {
     int found_count = 0;
-    for (DictEntry *e = all_dicts; e; e = e->next) e->has_matches = FALSE;
-
-    char *query_key = g_utf8_casefold(query, -1);
     int dict_idx = 0;
+
     for (DictEntry *e = all_dicts; e; e = e->next) {
         if (!e->dict || !dict_entry_in_active_scope(e)) continue;
 
@@ -3368,7 +3536,6 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
                 g_free(rendered);
             }
 
-            // Prefer version with dots for the title
             if (!last_hw_render || (strstr(hw_to_render, "\xC2\xB7") && !strstr(last_hw_render, "\xC2\xB7"))) {
                 g_free(last_hw_render);
                 last_hw_render = g_strdup(hw_to_render);
@@ -3379,7 +3546,7 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
             g_free(raw_hw);
             if (clean_hw) g_free(clean_hw);
             if (display_hw) g_free(display_hw);
-            
+
             pos++;
             if (pos >= flat_index_count(e->dict->index)) break;
         }
@@ -3391,6 +3558,45 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
         g_free(last_hw_clean);
         g_free(last_hw_render);
         dict_idx++;
+    }
+
+    return found_count;
+}
+
+static void render_query_to_webview(const char *query_raw, WebKitWebView *target_wv, gboolean push_history) {
+    if (!target_wv) return;
+
+    char *query = normalize_headword_for_search(query_raw, FALSE);
+    
+    /* Strip FTS prefix for headword matching in the renderer */
+    if (query && g_str_has_prefix(query, "* ")) {
+        char *stripped = g_strdup(query + 2);
+        g_free(query);
+        query = stripped;
+    }
+
+    if (!query || strlen(query) == 0) {
+        render_idle_page_to_webview(target_wv, "Diction", "Start typing to search...");
+        set_tab_metadata(target_wv, "", "Diction", 0);
+        g_free(query);
+        return;
+    }
+
+    GString *html_res = g_string_new("<html><body>");
+    char *escaped_query_attr = safe_markup_escape_n(query, -1);
+    g_string_append_printf(html_res, "<div class='word-group' data-word='%s'>", escaped_query_attr);
+    g_free(escaped_query_attr);
+    gsize html_prefix_len = html_res->len;
+
+    for (DictEntry *e = all_dicts; e; e = e->next) e->has_matches = FALSE;
+    int found_count = append_exact_matches_html(html_res, query);
+    if (found_count == 0) {
+        char *fallback_query = exact_lookup_definite_article_variant(query);
+        if (fallback_query) {
+            g_string_truncate(html_res, html_prefix_len);
+            found_count = append_exact_matches_html(html_res, fallback_query);
+            g_free(fallback_query);
+        }
     }
 
     if (found_count > 0) {
@@ -3413,7 +3619,6 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
         g_free(escaped_query);
     }
     g_string_free(html_res, TRUE);
-    g_free(query_key);
     g_free(query);
 
     /* Refresh the Dictionaries sidebar so it shows only dicts with results */
@@ -3460,60 +3665,14 @@ static void append_rendered_word_html_impl(const char *raw_word, gboolean push_h
     char *display_title = normalize_headword_for_render(raw_word, raw_word ? strlen(raw_word) : 0, TRUE);
 
     GString *html_res = g_string_new("");
-    int found_count = 0;
-    char *query_key = g_utf8_casefold(query, -1);
-    int dict_idx = 0;
-    
-    for (DictEntry *e = all_dicts; e; e = e->next) {
-        if (!e->dict || !dict_entry_in_active_scope(e)) continue;
-
-        size_t pos = flat_index_search(e->dict->index, query);
-        int dict_header_shown = 0;
-        char *last_hw = NULL;
-        GString *merged_body = g_string_new("");
-
-        while (pos != (size_t)-1) {
-            const FlatTreeEntry *res = flat_index_get(e->dict->index, pos);
-            if (!res) break;
-
-            if (compare_headword(e->dict->data, res, query, strlen(query)) != 0) break;
-
-            char *tmp_hw = g_strndup(e->dict->data + res->h_off, res->h_len);
-            char *clean_hw = normalize_headword_for_search(tmp_hw, TRUE);
-            gboolean matches = (clean_hw && g_ascii_strcasecmp(clean_hw, query) == 0);
-            const char *hw_to_use = clean_hw ? clean_hw : tmp_hw;
-
-            if (matches) {
-                if (last_hw && strcmp(hw_to_use, last_hw) != 0) {
-                    render_merged_group(html_res, e, last_hw, merged_body, dict_idx, &dict_header_shown, &found_count);
-                    g_string_truncate(merged_body, 0);
-                }
-
-                char *rendered = render_entry_def_to_html(e, res);
-                if (rendered) {
-                    if (merged_body->len > 0) {
-                        g_string_append(merged_body, "<hr style='border:none;border-top:1px dashed #ccc;margin:10px 0;opacity:0.5;'>");
-                    }
-                    g_string_append(merged_body, rendered);
-                    free(rendered);
-                }
-
-                g_free(last_hw);
-                last_hw = g_strdup(hw_to_use);
-            }
-            g_free(tmp_hw);
-            if (clean_hw) g_free(clean_hw);
-
-            pos++;
-            if (pos >= flat_index_count(e->dict->index)) break;
+    int found_count = append_exact_matches_html(html_res, query);
+    if (found_count == 0) {
+        char *fallback_query = exact_lookup_definite_article_variant(query);
+        if (fallback_query) {
+            g_string_truncate(html_res, 0);
+            found_count = append_exact_matches_html(html_res, fallback_query);
+            g_free(fallback_query);
         }
-
-        if (merged_body->len > 0) {
-            render_merged_group(html_res, e, last_hw, merged_body, dict_idx, &dict_header_shown, &found_count);
-        }
-        g_string_free(merged_body, TRUE);
-        g_free(last_hw);
-        dict_idx++;
     }
 
     if (found_count > 0) {
@@ -3563,7 +3722,6 @@ static void append_rendered_word_html_impl(const char *raw_word, gboolean push_h
     }
     
     g_free(display_title);
-    g_free(query_key);
     g_free(query);
     g_string_free(html_res, TRUE);
 }

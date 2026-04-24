@@ -8,21 +8,53 @@
 /* ── helpers ──────────────────────────────────────────── */
 
 
-static size_t get_dsl_ignored_len(const char *s, size_t max_len) {
+static gboolean dsl_headword_is_escapable_char(char c) {
+    return c != '\0' && strchr(" {}~\\@#()[]<>;", c) != NULL;
+}
+
+static size_t get_dsl_brace_tag_len(const char *s, size_t max_len) {
+    static const char *patterns[] = {
+        "{*}",
+        "{·}",
+        "{ˈ}",
+        "{ˌ}",
+        "{[']}",
+        "{[/']}"
+    };
+
+    if (!s || max_len == 0 || s[0] != '{') {
+        return 0;
+    }
+
+    for (guint i = 0; i < G_N_ELEMENTS(patterns); i++) {
+        size_t len = strlen(patterns[i]);
+        if (len <= max_len && strncmp(s, patterns[i], len) == 0) {
+            return len;
+        }
+    }
+
+    return 0;
+}
+
+static size_t get_dsl_ignored_len_ext(const char *s, size_t max_len, bool raw_side) {
     if (max_len == 0) return 0;
-    
-    // Support block-skipping for curly braces {...}
+
     if (s[0] == '{') {
-        size_t i = 1;
-        while (i < max_len && s[i] != '}') i++;
-        if (i < max_len && s[i] == '}') return i + 1;
-        return 1; // skip lone '{'
+        size_t brace_tag_len = get_dsl_brace_tag_len(s, max_len);
+        if (brace_tag_len > 0) {
+            return brace_tag_len;
+        }
+        if (raw_side) {
+            return 1;
+        }
+    }
+
+    if (raw_side && s[0] == '}') {
+        return 1;
     }
 
     char c = s[0];
-    if (g_ascii_isspace(c) || 
-        c == '}' || c == '\\' || c == '~' ||
-        c == '[' || c == ']' || c == '*') {
+    if (g_ascii_isspace(c) || c == '*') {
         return 1;
     }
     
@@ -40,31 +72,29 @@ static int compare_dsl_agnostic(const char *raw, size_t raw_len, const char *cle
     size_t r = 0, c = 0;
     size_t skip;
 
-    while (r < raw_len && (skip = get_dsl_ignored_len(raw + r, raw_len - r)) > 0) r += skip;
-    while (c < clean_len && (skip = get_dsl_ignored_len(clean + c, clean_len - c)) > 0) c += skip;
+    while (r < raw_len || c < clean_len) {
+        while (r < raw_len && (skip = get_dsl_ignored_len_ext(raw + r, raw_len - r, true)) > 0) r += skip;
+        while (c < clean_len && (skip = get_dsl_ignored_len_ext(clean + c, clean_len - c, false)) > 0) c += skip;
 
-    while (r < raw_len && c < clean_len) {
-        if ((skip = get_dsl_ignored_len(raw + r, raw_len - r)) > 0) {
-            r += skip;
-            continue;
-        }
-        if ((skip = get_dsl_ignored_len(clean + c, clean_len - c)) > 0) {
-            c += skip;
-            continue;
-        }
+        if (r == raw_len || c == clean_len) break;
 
-        int diff = g_ascii_tolower(raw[r]) - g_ascii_tolower(clean[c]);
+        char char_r, char_c;
+        if (raw[r] == '\\' && r + 1 < raw_len && dsl_headword_is_escapable_char(raw[r + 1])) {
+            r++; char_r = raw[r++];
+        } else {
+            char_r = raw[r++];
+        }
+        char_c = clean[c++];
+
+        int diff = g_ascii_tolower(char_r) - g_ascii_tolower(char_c);
         if (diff != 0) return diff;
-        r++;
-        c++;
     }
 
-    while (r < raw_len && (skip = get_dsl_ignored_len(raw + r, raw_len - r)) > 0) r += skip;
-    while (c < clean_len && (skip = get_dsl_ignored_len(clean + c, clean_len - c)) > 0) c += skip;
+    while (r < raw_len && (skip = get_dsl_ignored_len_ext(raw + r, raw_len - r, true)) > 0) r += skip;
+    while (c < clean_len && (skip = get_dsl_ignored_len_ext(clean + c, clean_len - c, false)) > 0) c += skip;
 
     if (r == raw_len && c == clean_len) return 0;
-    if (r == raw_len) return -1;
-    return 1;
+    return (r == raw_len) ? -1 : 1;
 }
 
 int compare_headword(const char *data, const FlatTreeEntry *entry,
@@ -73,32 +103,31 @@ int compare_headword(const char *data, const FlatTreeEntry *entry,
 }
 
 static int compare_prefix(const char *data, const FlatTreeEntry *entry,
-                          const char *prefix, size_t plen) {
+                           const char *prefix, size_t plen) {
     size_t r = 0, c = 0;
     const char *raw = data + entry->h_off;
     size_t raw_len = entry->h_len;
     size_t skip;
 
-    while (r < raw_len && (skip = get_dsl_ignored_len(raw + r, raw_len - r)) > 0) r += skip;
-    while (c < plen && (skip = get_dsl_ignored_len(prefix + c, plen - c)) > 0) c += skip;
-
     while (r < raw_len && c < plen) {
-        if ((skip = get_dsl_ignored_len(raw + r, raw_len - r)) > 0) {
-            r += skip;
-            continue;
-        }
-        if ((skip = get_dsl_ignored_len(prefix + c, plen - c)) > 0) {
-            c += skip;
-            continue;
-        }
+        while (r < raw_len && (skip = get_dsl_ignored_len_ext(raw + r, raw_len - r, true)) > 0) r += skip;
+        while (c < plen && (skip = get_dsl_ignored_len_ext(prefix + c, plen - c, false)) > 0) c += skip;
 
-        int diff = g_ascii_tolower(raw[r]) - g_ascii_tolower(prefix[c]);
+        if (r == raw_len || c == plen) break;
+
+        char char_r, char_c;
+        if (raw[r] == '\\' && r + 1 < raw_len && dsl_headword_is_escapable_char(raw[r + 1])) {
+            r++; char_r = raw[r++];
+        } else {
+            char_r = raw[r++];
+        }
+        char_c = prefix[c++];
+
+        int diff = g_ascii_tolower(char_r) - g_ascii_tolower(char_c);
         if (diff != 0) return diff;
-        r++;
-        c++;
     }
-    if (c == plen) return 0; // prefix fully matched!
-    return -1; // raw word is shorter than prefix
+    if (c == plen) return 0;
+    return -1;
 }
 
 /* Comparator for qsort during cache building */
@@ -117,31 +146,33 @@ static int sort_compare(const void *a, const void *b) {
     size_t lb = (size_t)eb->h_len;
 
     size_t i = 0, j = 0;
+    size_t skip;
 
-    /* Skip leading whitespace */
-    while (i < la && g_ascii_isspace(ra[i])) i++;
-    while (j < lb && g_ascii_isspace(rb[j])) j++;
+    while (i < la || j < lb) {
+        while (i < la && (skip = get_dsl_ignored_len_ext(ra + i, la - i, true)) > 0) i += skip;
+        while (j < lb && (skip = get_dsl_ignored_len_ext(rb + j, lb - j, true)) > 0) j += skip;
 
-    while (i < la && j < lb) {
-        size_t skip;
-        if ((skip = get_dsl_ignored_len(ra + i, la - i)) > 0) {
-            i += skip;
-            continue;
+        if (i == la || j == lb) break;
+
+        char char_a, char_b;
+        if (ra[i] == '\\' && i + 1 < la && dsl_headword_is_escapable_char(ra[i + 1])) {
+            i++; char_a = ra[i++];
+        } else {
+            char_a = ra[i++];
         }
-        if ((skip = get_dsl_ignored_len(rb + j, lb - j)) > 0) {
-            j += skip;
-            continue;
+
+        if (rb[j] == '\\' && j + 1 < lb && dsl_headword_is_escapable_char(rb[j + 1])) {
+            j++; char_b = rb[j++];
+        } else {
+            char_b = rb[j++];
         }
 
-        int diff = g_ascii_tolower(ra[i]) - g_ascii_tolower(rb[j]);
+        int diff = g_ascii_tolower(char_a) - g_ascii_tolower(char_b);
         if (diff != 0) return diff;
-        i++;
-        j++;
     }
 
-    size_t skip;
-    while (i < la && (skip = get_dsl_ignored_len(ra + i, la - i)) > 0) i += skip;
-    while (j < lb && (skip = get_dsl_ignored_len(rb + j, lb - j)) > 0) j += skip;
+    while (i < la && (skip = get_dsl_ignored_len_ext(ra + i, la - i, true)) > 0) i += skip;
+    while (j < lb && (skip = get_dsl_ignored_len_ext(rb + j, lb - j, true)) > 0) j += skip;
 
     if (i == la && j == lb) {
         /* Tie-breaker: Case-sensitive exact comparison of the RAW bytes */
