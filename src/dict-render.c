@@ -17,7 +17,7 @@ static void buf_append(StrBuf *b, const char *s, size_t n) {
     if (b->len + n + 1 > b->cap) {
         b->cap = b->cap == 0 ? 1024 : b->cap * 2;
         while (b->len + n + 1 > b->cap) b->cap *= 2;
-        b->str = realloc(b->str, b->cap);
+        b->str = g_realloc(b->str, b->cap);
     }
     memcpy(b->str + b->len, s, n);
     b->len += n;

@@ -94,6 +94,7 @@ static GtkProgressBar *startup_splash_progress = NULL;
 static guint startup_splash_pulse_id = 0;
 static gboolean startup_loading_active = FALSE;
 static gboolean dictionary_loading_in_progress = FALSE;
+static gint64 rescan_suppress_until = 0;
 static gboolean startup_random_word_pending = FALSE;
 
 #define GLOBAL_SHORTCUT_ID "diction-scan-shortcut"
@@ -1969,11 +1970,8 @@ static void remove_directory_monitor_subtree(const char *path) {
 
 static gboolean dictionary_monitor_event_requires_reload(GFileMonitorEvent event_type) {
     switch (event_type) {
-        case G_FILE_MONITOR_EVENT_CHANGED:
-        case G_FILE_MONITOR_EVENT_CHANGES_DONE_HINT:
         case G_FILE_MONITOR_EVENT_CREATED:
         case G_FILE_MONITOR_EVENT_DELETED:
-        case G_FILE_MONITOR_EVENT_ATTRIBUTE_CHANGED:
         case G_FILE_MONITOR_EVENT_MOVED:
         case G_FILE_MONITOR_EVENT_RENAMED:
         case G_FILE_MONITOR_EVENT_MOVED_IN:
@@ -2176,6 +2174,8 @@ static void on_dictionary_dir_changed(GFileMonitor *monitor,
     }
 
     g_free(file_path);
+    if (dictionary_loading_in_progress) return;
+    if (g_get_monotonic_time() < rescan_suppress_until) return;
     request_dictionary_directory_rescan(TRUE);
 }
 
@@ -2205,6 +2205,8 @@ static void on_dictionary_root_parent_changed(GFileMonitor *monitor,
         remove_directory_monitor_subtree(root_path);
     }
 
+    if (dictionary_loading_in_progress) return;
+    if (g_get_monotonic_time() < rescan_suppress_until) return;
     request_dictionary_directory_rescan(TRUE);
 }
 
@@ -2213,10 +2215,10 @@ static DictEntry *dict_entry_new_shell(const char *name, const char *path) {
         return NULL;
     }
 
-    DictEntry *entry = calloc(1, sizeof(DictEntry));
+    DictEntry *entry = g_new0(DictEntry, 1);
     entry->format = dict_detect_format(path);
-    entry->path = strdup(path);
-    entry->name = strdup((name && *name) ? name : path);
+    entry->path = g_strdup(path);
+    entry->name = g_strdup((name && *name) ? name : path);
     return entry;
 }
 
@@ -2264,11 +2266,11 @@ static guint rebuild_dict_entries_from_settings(void) {
                 entry = dict_entry_new_shell(cfg->name, cfg->path);
             } else {
                 g_hash_table_add(reused_entries, entry);
-                free(entry->name);
-                entry->name = strdup((cfg->name && *cfg->name) ? cfg->name : cfg->path);
+                g_free(entry->name);
+                entry->name = g_strdup((cfg->name && *cfg->name) ? cfg->name : cfg->path);
                 if (g_strcmp0(entry->path, cfg->path) != 0) {
-                    free(entry->path);
-                    entry->path = strdup(cfg->path);
+                    g_free(entry->path);
+                    entry->path = g_strdup(cfg->path);
                 }
                 entry->format = dict_detect_format(cfg->path);
                 entry->has_matches = FALSE;
@@ -3276,7 +3278,7 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
                     g_string_append(merged_body, "<hr style='border:none;border-top:1px dashed #ccc;margin:10px 0;opacity:0.5;'>");
                 }
                 g_string_append(merged_body, rendered);
-                free(rendered);
+                g_free(rendered);
             }
 
             g_free(last_hw);
@@ -3646,6 +3648,7 @@ static void activate_dictionary_entry(DictEntry *e) {
 // Refresh the current search results when theme changes
 static void refresh_search_results(void) {
     if (!tab_view) return;
+    rescan_suppress_until = g_get_monotonic_time() + 2 * G_USEC_PER_SEC;
 
     GListModel *pages = G_LIST_MODEL(adw_tab_view_get_pages(tab_view));
     guint n_pages = g_list_model_get_n_items(pages);
@@ -4546,29 +4549,29 @@ static DictEntry *create_dict_entry_from_loaded(const char *path, DictFormat fmt
         return NULL;
     }
 
-    DictEntry *entry = calloc(1, sizeof(DictEntry));
+    DictEntry *entry = g_new0(DictEntry, 1);
     entry->format = fmt;
     entry->dict = dict;
 
     if (dict->name && *dict->name) {
         char *valid = g_utf8_make_valid(dict->name, -1);
-        entry->name = strdup(valid);
+        entry->name = g_strdup(valid);
         g_free(valid);
     } else {
         char *base = g_path_get_basename(path);
         char *valid = g_utf8_make_valid(base, -1);
-        entry->name = strdup(valid);
+        entry->name = g_strdup(valid);
         g_free(valid);
         g_free(base);
     }
 
     char *valid_path = g_utf8_make_valid(path, -1);
-    entry->path = strdup(valid_path);
+    entry->path = g_strdup(valid_path);
     g_free(valid_path);
 
     /* Propagate icon detected by the parser / dict-loader fallback */
     if (dict->icon_path) {
-        entry->icon_path = strdup(dict->icon_path);
+        entry->icon_path = g_strdup(dict->icon_path);
     }
 
     return entry;
@@ -4774,12 +4777,12 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
             existing->format = e->format;
 
             if (e->name) {
-                free(existing->name);
-                existing->name = strdup(e->name);
+                g_free(existing->name);
+                existing->name = g_strdup(e->name);
             }
             if (e->icon_path) {
-                if (existing->icon_path) free(existing->icon_path);
-                existing->icon_path = strdup(e->icon_path);
+                g_free(existing->icon_path);
+                existing->icon_path = g_strdup(e->icon_path);
             }
 
             // We can free the 'e' shell now as 'e->dict' is transferred

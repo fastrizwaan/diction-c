@@ -858,7 +858,7 @@ static char *mdx_prepare_resource_dir(const char *path, int is_v2, int num_size,
     }
 
     if (out_reader) {
-        *out_reader = mdx_open_mdd_reader(mdd_paths, mdx_dir, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected);
+        *out_reader = mdx_open_mdd_reader(mdd_paths, resource_dir, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected);
     }
 
     g_ptr_array_free(mdd_paths, TRUE);
@@ -1109,7 +1109,7 @@ DictMmap *parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
         }
         close(cache_fd);
 
-        DictMmap *dict = calloc(1, sizeof(DictMmap));
+        DictMmap *dict = g_new0(DictMmap, 1);
         dict->fd = -1; // Explicitly invalidate fd since mmap handles the memory mapping autonomously
         dict->data = dict_data;
         dict->size = dict_size;
@@ -1453,7 +1453,7 @@ rebuild_cache:
     dict_size = st_final.st_size;
     dict_data = mmap(NULL, dict_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
 
-    DictMmap *dict = calloc(1, sizeof(DictMmap));
+    DictMmap *dict = g_new0(DictMmap, 1);
     dict->fd = cache_fd;
     dict->data = dict_data;
     dict->size = dict_size;

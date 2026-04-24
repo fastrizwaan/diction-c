@@ -22,10 +22,7 @@ static char *basename_noext(const char *path) {
     const char *base = slash ? slash + 1 : path;
     const char *dot = strrchr(base, '.');
     size_t len = dot ? (size_t)(dot - base) : strlen(base);
-    char *out = malloc(len + 1);
-    memcpy(out, base, len);
-    out[len] = '\0';
-    return out;
+    return g_strndup(base, len);
 }
 
 static gboolean file_exists_at(const char *path) {
@@ -279,7 +276,7 @@ static void scan_recursive(const char *dirpath, GList **head,
             discovery_entry.path = (char*)load_path;
             discovery_entry.format = fmt;
             callback(&discovery_entry, DICT_LOADER_EVENT_DISCOVERED, user_data);
-            free(base);
+            g_free(base);
         }
 
         if (callback) {
@@ -308,28 +305,28 @@ static void scan_recursive(const char *dirpath, GList **head,
         }
 
         char *owned_load_path = g_strdup(load_path);
-        DictEntry *entry = calloc(1, sizeof(DictEntry));
+        DictEntry *entry = g_new0(DictEntry, 1);
         if (loaded->name && strlen(loaded->name) > 0) {
             char *valid = g_utf8_make_valid(loaded->name, -1);
-            entry->name = strdup(valid);
+            entry->name = g_strdup(valid);
             g_free(valid);
         } else {
             char *base = basename_noext(owned_load_path);
             char *valid = g_utf8_make_valid(base, -1);
-            entry->name = strdup(valid);
+            entry->name = g_strdup(valid);
             g_free(valid);
-            free(base);
+            g_free(base);
         }
 
         char *valid_path = g_utf8_make_valid(owned_load_path, -1);
-        entry->path = strdup(valid_path);
+        entry->path = g_strdup(valid_path);
         g_free(valid_path);
         g_free(owned_load_path);
         g_free(full);
         entry->format = fmt;
         entry->dict = loaded;
         if (loaded->icon_path) {
-            entry->icon_path = strdup(loaded->icon_path);
+            entry->icon_path = g_strdup(loaded->icon_path);
         }
 
         if (callback) {
@@ -430,7 +427,7 @@ static void discover_with_find(const char *dirpath, DictLoaderCallback callback,
             discovery_entry.path = (char*)load_path;
             discovery_entry.format = fmt;
             callback(&discovery_entry, DICT_LOADER_EVENT_DISCOVERED, user_data);
-            free(base);
+            g_free(base);
         }
 
         if (callback) {
@@ -458,26 +455,26 @@ static void discover_with_find(const char *dirpath, DictLoaderCallback callback,
             family_key = NULL;
         }
 
-        DictEntry *entry = calloc(1, sizeof(DictEntry));
+        DictEntry *entry = g_new0(DictEntry, 1);
         if (loaded->name && strlen(loaded->name) > 0) {
             char *valid = g_utf8_make_valid(loaded->name, -1);
-            entry->name = strdup(valid);
+            entry->name = g_strdup(valid);
             g_free(valid);
         } else {
             char *base = basename_noext(load_path);
             char *valid = g_utf8_make_valid(base, -1);
-            entry->name = strdup(valid);
+            entry->name = g_strdup(valid);
             g_free(valid);
-            free(base);
+            g_free(base);
         }
 
         char *valid_path = g_utf8_make_valid(load_path, -1);
-        entry->path = strdup(valid_path);
+        entry->path = g_strdup(valid_path);
         g_free(valid_path);
         entry->format = fmt;
         entry->dict = loaded;
         if (loaded->icon_path) {
-            entry->icon_path = strdup(loaded->icon_path);
+            entry->icon_path = g_strdup(loaded->icon_path);
         }
 
         if (callback) {
@@ -543,11 +540,11 @@ void dict_loader_free(DictEntry *head) {
     while (head) {
         DictEntry *next = head->next;
         if (head->dict) dict_mmap_close(head->dict);
-        free(head->name);
-        free(head->path);
-        free(head->guessed_lang_group);
-        free(head->icon_path);
-        free(head);
+        g_free(head->name);
+        g_free(head->path);
+        g_free(head->guessed_lang_group);
+        g_free(head->icon_path);
+        g_free(head);
         head = next;
     }
 }

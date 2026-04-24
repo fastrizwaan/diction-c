@@ -439,7 +439,7 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
             close(cache_fd); g_free(cache_path); return NULL;
         }
 
-        DictMmap *dict = calloc(1, sizeof(DictMmap));
+        DictMmap *dict = g_new0(DictMmap, 1);
         dict->fd = cache_fd;
         dict->tmp_file = NULL;
         dict->data = dict_data;
@@ -537,7 +537,7 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
         dict_size = st.st_size;
         dict_data = mmap(NULL, dict_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
 
-        DictMmap *dict = calloc(1, sizeof(DictMmap));
+        DictMmap *dict = g_new0(DictMmap, 1);
         dict->fd = cache_fd;
         dict->tmp_file = NULL;
         dict->data = dict_data;

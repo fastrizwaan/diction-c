@@ -394,7 +394,7 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
     gboolean cache_exists = (access(cache_path, F_OK) == 0);
     gboolean cache_valid = cache_exists && dict_cache_is_valid(cache_path, path);
 
-    DictMmap *dict = (DictMmap*)calloc(1, sizeof(DictMmap));
+    DictMmap *dict = g_new0(DictMmap, 1);
     dict->fd = -1;
     dict->tmp_file = NULL;
     dict->source_dir = g_path_get_dirname(path);
@@ -721,13 +721,13 @@ void dict_mmap_close(DictMmap *dict) {
         resource_reader_close(dict->resource_reader);
         if (dict->data) munmap((void*)dict->data, dict->size);
         if (dict->fd >= 0) close(dict->fd);
-        if (dict->name) free(dict->name);
-        if (dict->source_dir) free(dict->source_dir);
-        if (dict->resource_dir) free(dict->resource_dir);
-        if (dict->mdx_stylesheet) free(dict->mdx_stylesheet);
-        if (dict->source_lang) free(dict->source_lang);
-        if (dict->target_lang) free(dict->target_lang);
-        if (dict->icon_path) free(dict->icon_path);
-        free(dict);
+        g_free(dict->name);
+        g_free(dict->source_dir);
+        g_free(dict->resource_dir);
+        g_free(dict->mdx_stylesheet);
+        g_free(dict->source_lang);
+        g_free(dict->target_lang);
+        g_free(dict->icon_path);
+        g_free(dict);
     }
 }

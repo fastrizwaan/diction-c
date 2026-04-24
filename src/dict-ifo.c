@@ -442,7 +442,7 @@ static DictMmap *open_cached_stardict(const char *cache_path, char *bookname, ch
         return NULL;
     }
 
-    DictMmap *dict = calloc(1, sizeof(DictMmap));
+    DictMmap *dict = g_new0(DictMmap, 1);
     dict->fd = fd;
     dict->data = data;
     dict->size = st.st_size;

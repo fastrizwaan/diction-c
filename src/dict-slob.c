@@ -314,7 +314,7 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
     void *cache_map = mmap(NULL, st_cache.st_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
     if (cache_map == MAP_FAILED) { close(cache_fd); g_free(cache_path); g_free(title); return NULL; }
 
-    DictMmap *dm = calloc(1, sizeof(DictMmap));
+    DictMmap *dm = g_new0(DictMmap, 1);
     dm->fd = cache_fd;
     dm->data = (const char*)cache_map;
     dm->size = st_cache.st_size;
