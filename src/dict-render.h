@@ -25,7 +25,8 @@ char* dsl_render_to_html(const char *dsl_text,
                          const char *theme_name,
                          const char *render_style,
                          const char *font_family,
-                         int font_size);
+                         int font_size,
+                         const char *highlight_query);
 
 char *normalize_headword_for_render(const char *text, size_t length, gboolean keep_middle_dot);
 

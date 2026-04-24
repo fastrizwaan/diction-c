@@ -468,6 +468,7 @@ typedef struct {
 } SidebarSearchState;
 
 static SidebarSearchState *sidebar_search_state = NULL;
+static char *fts_highlight_query = NULL;
 
 typedef enum {
     RELATED_ROW_HINT = 0,
@@ -1841,15 +1842,24 @@ static void populate_search_sidebar(const char *query) {
     sidebar_search_state->seen_words = g_hash_table_new_full(
         g_str_hash, g_str_equal, g_free, NULL);
     sidebar_search_state->current_entry = all_dicts;
+    
+    /* Update FTS highlight query based on current search */
+    g_free(fts_highlight_query);
+    if (sidebar_search_state->is_fts) {
+        fts_highlight_query = g_strdup(sidebar_search_state->query);
+    } else {
+        fts_highlight_query = NULL;
+    }
 
     for (int i = 0; i < BUCKET_COUNT; i++) {
         sidebar_search_state->global_bucket_labels[i] = g_ptr_array_new();
         sidebar_search_state->global_bucket_payloads[i] = g_ptr_array_new();
     }
 
+    guint seeded = seed_search_sidebar_fast_rows(sidebar_search_state);
     if (sidebar_search_state->is_fts) {
-        populate_search_sidebar_status("Full Text Search…", NULL);
-    } else if (seed_search_sidebar_fast_rows(sidebar_search_state) == 0) {
+        if (seeded == 0) populate_search_sidebar_status("Full Text Search…", NULL);
+    } else if (seeded == 0) {
         populate_search_sidebar_status("Searching…", NULL);
     }
     sidebar_search_state->source_id = g_idle_add_full(
@@ -3056,7 +3066,8 @@ static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res
         app_settings ? app_settings->color_theme : "default",
         render_style,
         app_settings ? app_settings->font_family : NULL,
-        app_settings ? app_settings->font_size : 0);
+        app_settings ? app_settings->font_size : 0,
+        fts_highlight_query);
 }
 
 static void wrap_entry_in_style(GString *html_res, 
@@ -3289,6 +3300,13 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
     if (!target_wv) return;
 
     char *query = normalize_headword_for_search(query_raw, FALSE);
+    
+    /* Strip FTS prefix for headword matching in the renderer */
+    if (query && g_str_has_prefix(query, "* ")) {
+        char *stripped = g_strdup(query + 2);
+        g_free(query);
+        query = stripped;
+    }
 
     if (!query || strlen(query) == 0) {
         render_idle_page_to_webview(target_wv, "Diction", "Start typing to search...");
@@ -3406,6 +3424,14 @@ static void execute_search_now(void) {
 
 static void append_rendered_word_html_impl(const char *raw_word, gboolean push_history) {
     char *query = normalize_headword_for_search(raw_word, TRUE);
+    
+    /* Strip FTS prefix for headword matching in the renderer */
+    if (query && g_str_has_prefix(query, "* ")) {
+        char *stripped = g_strdup(query + 2);
+        g_free(query);
+        query = stripped;
+    }
+
     if (!query || strlen(query) == 0) {
         g_free(query);
         return;

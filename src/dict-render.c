@@ -2042,7 +2042,8 @@ char* dsl_render_to_html(const char *dsl_text,
                          const char *theme_name,
                          const char *render_style,
                          const char *font_family,
-                         int font_size) {
+                         int font_size,
+                         const char *highlight_query) {
     StrBuf b = {NULL, 0, 0};
     char *styled_text = NULL;
     char *normalized_plain_text = NULL;
@@ -2298,6 +2299,9 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, heading_color);
     buf_append_str(&b, ";}");
     buf_append_str(&b, ".slate-entry .rendered-entry-body{line-height:1.5;}");
+    buf_append_str(&b, ".fts-highlight{background-color:");
+    buf_append_str(&b, dark_mode ? "#ffd700" : "#ffeb3b");
+    buf_append_str(&b, ";color:#000;border-radius:2px;padding:0 2px;font-weight:bold;}");
     buf_append_str(&b, ".paper-entry{margin:0 0 1em 0;padding:14px 18px 12px 18px;border-left:4px solid ");
     buf_append_str(&b, paper_accent);
     buf_append_str(&b, ";border-radius:10px;border-top:1px solid ");
@@ -2902,9 +2906,29 @@ char* dsl_render_to_html(const char *dsl_text,
     } else {
         buf_append_str(&b, "</div></div>");
     }
+
+    char *result_html = b.str;
+    if (highlight_query && *highlight_query) {
+        GError *err = NULL;
+        char *escaped_q = g_regex_escape_string(highlight_query, -1);
+        /* Match outside of tags: skip anything inside <...> */
+        char *pattern = g_strdup_printf("(?![^<]*>)(%s)", escaped_q);
+        GRegex *highlight_regex = g_regex_new(pattern, G_REGEX_CASELESS | G_REGEX_OPTIMIZE, 0, &err);
+        if (highlight_regex) {
+            char *highlighted = g_regex_replace(highlight_regex, result_html, -1, 0, "<span class='fts-highlight'>\\1</span>", 0, NULL);
+            if (highlighted) {
+                g_free(result_html);
+                result_html = highlighted;
+            }
+            g_regex_unref(highlight_regex);
+        }
+        g_free(escaped_q);
+        g_free(pattern);
+        if (err) g_clear_error(&err);
+    }
     
     g_free(normalized_plain_text);
     g_free(styled_text);
     g_free(display_headword);
-    return finalize_placeholder_dict_links(b.str);
+    return finalize_placeholder_dict_links(result_html);
 }
