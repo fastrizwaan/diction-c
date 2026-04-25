@@ -3516,7 +3516,7 @@ static gboolean tab_page_is_full_text_search(AdwTabPage *page) {
 }
 
 static void update_search_mode_visuals(gboolean is_fts) {
-    const char *icon_name = is_fts ? "search-harddrive-symbolic" : "system-search-symbolic";
+    const char *icon_name = is_fts ? "search-dictionary-symbolic" : "system-search-symbolic";
     const char *placeholder = is_fts ? "Full Text Search" : "Search";
 
     /* Update the collapsed-button icon */
