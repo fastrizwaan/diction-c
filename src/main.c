@@ -40,13 +40,16 @@ static WebKitWebView *get_current_web_view(void) {
 #define web_view get_current_web_view()
 
 static AdwStyleManager *style_manager = NULL;
-static GtkSearchEntry *search_entry = NULL;
+static GtkEntry *search_entry = NULL;
 static GtkStack *search_stack = NULL;
+static void populate_search_sidebar(const char *query);
+static void populate_search_sidebar_with_mode(const char *query, gboolean force_fts);
 
 static AdwTabPage *create_new_tab(const char *title, gboolean select_it);
 static void on_tab_selected(AdwTabView *view, GParamSpec *pspec, gpointer user_data);
 static GtkButton *search_button = NULL;
 static GtkLabel *search_button_label = NULL;
+static GtkImage *search_mode_icon = NULL;
 static char *last_search_query = NULL;
 static AppSettings *app_settings = NULL;
 static char *active_scope_id = NULL;
@@ -60,6 +63,7 @@ static GtkLabel *find_status_label = NULL;
 typedef struct {
     char *view_word;
     char *search_query;
+    gboolean search_is_fts;
 } NavHistoryItem;
 
 static void nav_history_item_free(gpointer data) {
@@ -74,6 +78,7 @@ static void nav_history_item_free(gpointer data) {
 /* static int nav_history_index = -1; */
 static GtkWidget *nav_back_btn = NULL;
 static GtkWidget *nav_forward_btn = NULL;
+static GSimpleAction *full_text_search_toggle_action = NULL;
 static guint search_execute_source_id = 0;
 static GtkStringList *related_string_list = NULL;
 static GtkSingleSelection *related_selection_model = NULL;
@@ -434,19 +439,27 @@ static void render_idle_page_to_webview(WebKitWebView *target_wv,
 #define FAVORITES_FILE_NAME "favorites.json"
 static void populate_dict_sidebar(void);      // forward declaration
 static gboolean start_async_dict_loading(gboolean discover_from_dirs);   // forward declaration
-static void on_search_changed(GtkSearchEntry *entry, gpointer user_data); // forward declaration
+static void on_search_changed(GtkEditable *entry, gpointer user_data); // forward declaration
 static void on_random_clicked(GtkButton *btn, gpointer user_data);
 static void maybe_show_startup_random_word(void);
 static void refresh_search_results(void);
 static void render_idle_page_to_webview(WebKitWebView *target_wv,
                                         const char *title,
                                         const char *message_html);
+static void render_query_to_webview(const char *query_raw, WebKitWebView *target_wv, gboolean push_history);
 static void populate_search_sidebar(const char *query);
 static void execute_search_now(void);
 static void activate_dictionary_entry(DictEntry *e);
 static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded);
 static gboolean on_dict_loaded_idle(gpointer user_data);
 static void apply_font_to_webview(void *user_data);
+static void reveal_search_entry(gboolean select_text);
+static gboolean current_tab_is_full_text_search(void);
+static gboolean query_requests_full_text_search(const char *query_raw, gboolean preferred_fts);
+static void set_tab_full_text_search(AdwTabPage *page, gboolean is_fts);
+static void update_search_mode_visuals(gboolean is_fts);
+static void apply_fts_highlight_to_web_view(WebKitWebView *wv, const char *query);
+static void queue_fts_highlight_for_web_view(WebKitWebView *wv, const char *query);
 
 #define BUCKET_COUNT 6
 
@@ -1994,7 +2007,7 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
     return added;
 }
 
-static void populate_search_sidebar(const char *query) {
+static void populate_search_sidebar_with_mode(const char *query, gboolean force_fts) {
     cancel_sidebar_search();
 
     char *clean = normalize_headword_for_search(query, FALSE);
@@ -2002,13 +2015,15 @@ static void populate_search_sidebar(const char *query) {
     // We allow this to show all headwords.
 
     sidebar_search_state = g_new0(SidebarSearchState, 1);
-    
-    sidebar_search_state->is_fts = (clean && g_str_has_prefix(clean, "* "));
+
+    sidebar_search_state->is_fts = force_fts || (clean && g_str_has_prefix(clean, "* "));
     char *clean_query = clean;
     if (sidebar_search_state->is_fts) {
-        clean_query = g_strdup(clean + 2);
-        g_free(clean);
-        clean = clean_query;
+        if (clean && g_str_has_prefix(clean, "* ")) {
+            clean_query = g_strdup(clean + 2);
+            g_free(clean);
+            clean = clean_query;
+        }
     }
 
     sidebar_search_state->query = clean ? clean : g_strdup("");
@@ -2053,6 +2068,10 @@ static void populate_search_sidebar(const char *query) {
     }
     sidebar_search_state->source_id = g_idle_add_full(
         G_PRIORITY_DEFAULT_IDLE, continue_sidebar_search, sidebar_search_state, NULL);
+}
+
+static void populate_search_sidebar(const char *query) {
+    populate_search_sidebar_with_mode(query, FALSE);
 }
 
 static void update_favorites_word(const char *word, gboolean add) {
@@ -2857,6 +2876,7 @@ static void on_favorites_item_activated(GtkListView *view, guint position, gpoin
 static void on_groups_item_activated(GtkListView *view, guint position, gpointer user_data);
 static void on_dict_item_activated(GtkListView *view, guint position, gpointer user_data);
 
+static void append_rendered_word_html_impl(const char *raw_word, gboolean push_history);
 static void append_rendered_word_html(const char *raw_word);
 
 static GtkWidget *create_sidebar_list_view(SidebarListView *sidebar, GCallback activate_cb) {
@@ -3388,7 +3408,7 @@ static void update_nav_buttons_state(void) {
     }
 }
 
-static void push_to_nav_history(const char *view_word, const char *search_query) {
+static void push_to_nav_history(const char *view_word, const char *search_query, gboolean search_is_fts) {
     GPtrArray *hist = nav_history;
     int idx = nav_history_index;
     if (!hist) return;
@@ -3404,7 +3424,8 @@ static void push_to_nav_history(const char *view_word, const char *search_query)
     if (idx >= 0 && idx < (int)hist->len) {
         NavHistoryItem *current = g_ptr_array_index(hist, idx);
         if (g_ascii_strcasecmp(current->view_word, clean_view) == 0 &&
-            g_ascii_strcasecmp(current->search_query, clean_query) == 0) {
+            g_ascii_strcasecmp(current->search_query, clean_query) == 0 &&
+            current->search_is_fts == search_is_fts) {
             g_free(clean_view);
             g_free(clean_query);
             return;
@@ -3418,7 +3439,8 @@ static void push_to_nav_history(const char *view_word, const char *search_query)
     if (hist->len > 0) {
         NavHistoryItem *last = g_ptr_array_index(hist, hist->len - 1);
         if (g_ascii_strcasecmp(last->view_word, clean_view) == 0 &&
-            g_ascii_strcasecmp(last->search_query, clean_query) == 0) {
+            g_ascii_strcasecmp(last->search_query, clean_query) == 0 &&
+            last->search_is_fts == search_is_fts) {
             set_current_nav_index(hist->len - 1);
             g_free(clean_view);
             g_free(clean_query);
@@ -3430,6 +3452,7 @@ static void push_to_nav_history(const char *view_word, const char *search_query)
     NavHistoryItem *item = g_new0(NavHistoryItem, 1);
     item->view_word = clean_view;
     item->search_query = clean_query;
+    item->search_is_fts = search_is_fts;
     g_ptr_array_add(hist, item);
     set_current_nav_index(hist->len - 1);
     update_nav_buttons_state();
@@ -3438,12 +3461,15 @@ static void push_to_nav_history(const char *view_word, const char *search_query)
 static void execute_search_now_for_query(const char *query_raw, gboolean push_history);
 
 static void navigate_to_history_item(NavHistoryItem *item) {
+    AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
+    set_tab_full_text_search(page, item->search_is_fts);
+
     if (g_ascii_strcasecmp(item->view_word, item->search_query) == 0) {
-        populate_search_sidebar(item->search_query);
+        populate_search_sidebar_with_mode(item->search_query, item->search_is_fts);
         execute_search_now_for_query(item->search_query, FALSE);
     } else {
-        execute_search_now_for_query(item->view_word, FALSE);
-        populate_search_sidebar(item->search_query);
+        append_rendered_word_html_impl(item->view_word, FALSE);
+        populate_search_sidebar_with_mode(item->search_query, item->search_is_fts);
     }
 }
 
@@ -3483,6 +3509,68 @@ static void set_tab_metadata(WebKitWebView *wv, const char *query, const char *t
         if (title) adw_tab_page_set_title(page, title);
         g_object_set_data(G_OBJECT(page), "is-firm", GINT_TO_POINTER(is_firm));
     }
+}
+
+static gboolean tab_page_is_full_text_search(AdwTabPage *page) {
+    return page && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(page), "search-is-fts"));
+}
+
+static void update_search_mode_visuals(gboolean is_fts) {
+    const char *icon_name = is_fts ? "search-harddrive-symbolic" : "system-search-symbolic";
+    const char *placeholder = is_fts ? "Full Text Search" : "Search";
+
+    /* Update the collapsed-button icon */
+    if (search_mode_icon) {
+        gtk_image_set_from_icon_name(search_mode_icon, icon_name);
+    }
+
+    /* Update the primary icon inside the GtkEntry (works because search_entry
+     * is now a plain GtkEntry, not GtkSearchEntry which manages its own icon). */
+    if (search_entry) {
+        gtk_entry_set_icon_from_icon_name(search_entry, GTK_ENTRY_ICON_PRIMARY, icon_name);
+        gtk_entry_set_placeholder_text(search_entry, placeholder);
+    }
+
+    /* Update the collapsed button label (only when showing a generic placeholder) */
+    if (search_button_label) {
+        const char *lbl = gtk_label_get_text(search_button_label);
+        if (!lbl || !*lbl ||
+            g_strcmp0(lbl, "Search") == 0 ||
+            g_strcmp0(lbl, "Full Text Search") == 0) {
+            gtk_label_set_text(GTK_LABEL(search_button_label), placeholder);
+        }
+    }
+}
+
+static void sync_full_text_search_action_state(void) {
+    gboolean is_fts = tab_view && tab_page_is_full_text_search(adw_tab_view_get_selected_page(tab_view));
+    update_search_mode_visuals(is_fts);
+}
+
+static void set_tab_full_text_search(AdwTabPage *page, gboolean is_fts) {
+    if (!page) {
+        return;
+    }
+
+    g_object_set_data(G_OBJECT(page), "search-is-fts", GINT_TO_POINTER(is_fts));
+
+    if (tab_view && page == adw_tab_view_get_selected_page(tab_view)) {
+        sync_full_text_search_action_state();
+    }
+}
+
+static gboolean current_tab_is_full_text_search(void) {
+    return tab_view && tab_page_is_full_text_search(adw_tab_view_get_selected_page(tab_view));
+}
+
+static gboolean query_requests_full_text_search(const char *query_raw, gboolean preferred_fts) {
+    gboolean use_fts = preferred_fts;
+    char *clean_query = normalize_headword_for_search(query_raw, FALSE);
+    if (clean_query && g_str_has_prefix(clean_query, "* ")) {
+        use_fts = TRUE;
+    }
+    g_free(clean_query);
+    return use_fts;
 }
 
 static char *exact_lookup_definite_article_variant(const char *query) {
@@ -3567,8 +3655,10 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
     if (!target_wv) return;
 
     char *query = normalize_headword_for_search(query_raw, FALSE);
-    
-    /* Strip FTS prefix for headword matching in the renderer */
+    gboolean should_highlight_fts =
+        query_requests_full_text_search(query_raw, current_tab_is_full_text_search()) &&
+        fts_highlight_query && *fts_highlight_query;
+
     if (query && g_str_has_prefix(query, "* ")) {
         char *stripped = g_strdup(query + 2);
         g_free(query);
@@ -3576,6 +3666,7 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
     }
 
     if (!query || strlen(query) == 0) {
+        queue_fts_highlight_for_web_view(target_wv, NULL);
         render_idle_page_to_webview(target_wv, "Diction", "Start typing to search...");
         set_tab_metadata(target_wv, "", "Diction", 0);
         g_free(query);
@@ -3600,15 +3691,18 @@ static void render_query_to_webview(const char *query_raw, WebKitWebView *target
     }
 
     if (found_count > 0) {
+        queue_fts_highlight_for_web_view(target_wv,
+                                         should_highlight_fts ? fts_highlight_query : NULL);
         g_string_append(html_res, "</div></body></html>");
         webkit_web_view_load_html(target_wv, html_res->str, "file:///");
         set_tab_metadata(target_wv, query, query, 1);
         if (push_history && target_wv == get_current_web_view()) {
             update_history_word(query);
             const char *current_search_query = gtk_editable_get_text(GTK_EDITABLE(search_entry));
-            push_to_nav_history(query, current_search_query);
+            push_to_nav_history(query, current_search_query, current_tab_is_full_text_search());
         }
     } else {
+        queue_fts_highlight_for_web_view(target_wv, NULL);
         set_tab_metadata(target_wv, query, "No Match", 1);
         char *escaped_query = safe_markup_escape_n(query, -1);
         char *message = g_strdup_printf(
@@ -3647,6 +3741,68 @@ static void execute_search_now(void) {
     execute_search_now_for_query(query_raw, TRUE);
 }
 
+static void apply_fts_highlight_to_web_view(WebKitWebView *wv, const char *query) {
+    if (!wv || !query || !*query) {
+        return;
+    }
+
+    char *escaped_text = g_strescape(query, NULL);
+    char *js = g_strdup_printf(
+        "(function(text) {"
+        "  function clear() {"
+        "    const marks = document.querySelectorAll('span.fts-highlight');"
+        "    marks.forEach(m => {"
+        "      const parent = m.parentNode;"
+        "      if (!parent) return;"
+        "      while (m.firstChild) parent.insertBefore(m.firstChild, m);"
+        "      parent.removeChild(m);"
+        "    });"
+        "  }"
+        "  clear();"
+        "  if (!text) return;"
+        "  const regex = new RegExp(text.replace(/[-\\/\\\\^$*+?.()|[\\]{}]/g, '\\\\$&'), 'gi');"
+        "  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);"
+        "  const nodes = [];"
+        "  let node;"
+        "  while ((node = walker.nextNode())) nodes.push(node);"
+        "  nodes.forEach(node => {"
+        "    const p = node.parentNode;"
+        "    if (p && (p.tagName === 'SCRIPT' || p.tagName === 'STYLE' || p.classList?.contains('fts-highlight'))) return;"
+        "    const val = node.nodeValue;"
+        "    let match;"
+        "    const matches = [];"
+        "    while ((match = regex.exec(val)) !== null) matches.push(match);"
+        "    for (let i = matches.length - 1; i >= 0; i--) {"
+        "      const m = matches[i];"
+        "      const range = document.createRange();"
+        "      try {"
+        "        range.setStart(node, m.index);"
+        "        range.setEnd(node, m.index + m[0].length);"
+        "        const span = document.createElement('span');"
+        "        span.className = 'fts-highlight';"
+        "        range.surroundContents(span);"
+        "      } catch (e) {}"
+        "    }"
+        "  });"
+        "})('%s');",
+        escaped_text);
+
+    webkit_web_view_evaluate_javascript(wv, js, -1, NULL, NULL, NULL, NULL, NULL);
+    g_free(js);
+    g_free(escaped_text);
+}
+
+static void queue_fts_highlight_for_web_view(WebKitWebView *wv, const char *query) {
+    if (!wv) {
+        return;
+    }
+
+    g_object_set_data_full(G_OBJECT(wv),
+                           "pending-fts-highlight-query",
+                           query && *query ? g_strdup(query) : NULL,
+                           g_free);
+}
+
 static void append_rendered_word_html_impl(const char *raw_word, gboolean push_history) {
     char *query = normalize_headword_for_search(raw_word, TRUE);
     
@@ -3676,19 +3832,30 @@ static void append_rendered_word_html_impl(const char *raw_word, gboolean push_h
     }
 
     if (found_count > 0) {
+        const char *current_search_query = search_entry
+            ? gtk_editable_get_text(GTK_EDITABLE(search_entry))
+            : NULL;
+        gboolean should_highlight_fts =
+            query_requests_full_text_search(current_search_query, current_tab_is_full_text_search()) &&
+            fts_highlight_query && *fts_highlight_query;
+
         set_tab_metadata(get_current_web_view(), query, display_title, 1);
         
         if (push_history) {
             update_history_word(query);
-            const char *current_search_query = gtk_editable_get_text(GTK_EDITABLE(search_entry));
-            push_to_nav_history(query, current_search_query);
+            push_to_nav_history(query, current_search_query,
+                                query_requests_full_text_search(current_search_query, current_tab_is_full_text_search()));
         }
 
         char *b64_html = g_base64_encode((const guchar *)html_res->str, html_res->len);
         char *b64_word = g_base64_encode((const guchar *)query, strlen(query));
 
         WebKitWebView *wv = get_current_web_view();
-        if (wv) webkit_web_view_load_html(wv, html_res->str, "file:///");
+        if (wv) {
+            queue_fts_highlight_for_web_view(wv,
+                                             should_highlight_fts ? fts_highlight_query : NULL);
+            webkit_web_view_load_html(wv, html_res->str, "file:///");
+        }
 
         char *js = g_strdup_printf(
             "var decWord = atob('%s');"
@@ -3730,7 +3897,7 @@ static void append_rendered_word_html(const char *raw_word) {
     append_rendered_word_html_impl(raw_word, TRUE);
 }
 
-static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
+static void on_search_changed(GtkEditable *entry, gpointer user_data) {
     (void)user_data;
     
     if (gtk_widget_has_focus(GTK_WIDGET(entry))) {
@@ -3764,13 +3931,34 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
     }
     
     g_free(display_query);
+    update_search_mode_visuals(current_tab_is_full_text_search());
 
-    populate_search_sidebar(query);
+    gboolean is_fts = current_tab_is_full_text_search();
+    if (is_fts) {
+        if (search_execute_source_id != 0) {
+            g_source_remove(search_execute_source_id);
+            search_execute_source_id = 0;
+        }
+
+        if (!query || strlen(query) == 0) {
+            cancel_sidebar_search();
+            g_clear_pointer(&fts_highlight_query, g_free);
+            populate_search_sidebar_status("Full Text Search", "Type a word or phrase to search all definitions.");
+        } else {
+            populate_search_sidebar_with_mode(query, TRUE);
+        }
+    } else {
+        populate_search_sidebar_with_mode(query, FALSE);
+    }
 
     if (last_search_query && strcmp(query, last_search_query) == 0) return;
 
     g_free(last_search_query);
     last_search_query = g_strdup(query);
+
+    if (is_fts) {
+        return;
+    }
 
     if (!query || strlen(query) == 0) {
         execute_search_now();
@@ -4292,6 +4480,25 @@ static void apply_font_to_webview(void *user_data) {
     update_theme_colors();
 }
 
+static void on_web_view_load_changed(WebKitWebView *wv,
+                                     WebKitLoadEvent load_event,
+                                     gpointer user_data) {
+    (void)user_data;
+
+    if (load_event != WEBKIT_LOAD_FINISHED) {
+        return;
+    }
+
+    const char *pending_query =
+        g_object_get_data(G_OBJECT(wv), "pending-fts-highlight-query");
+    if (!pending_query || !*pending_query) {
+        return;
+    }
+
+    apply_fts_highlight_to_web_view(wv, pending_query);
+    g_object_set_data(G_OBJECT(wv), "pending-fts-highlight-query", NULL);
+}
+
 static GMutex dict_loader_mutex;
 static volatile gint loader_generation = 0;
 
@@ -4450,6 +4657,101 @@ static void on_scan_clipboard_action(GSimpleAction *action, GVariant *parameter,
     scan_popup_trigger_manual();
 }
 
+static void reveal_search_entry(gboolean select_text) {
+    if (!search_stack || !search_entry) {
+        return;
+    }
+
+    gtk_stack_set_visible_child_name(search_stack, "entry");
+    gtk_widget_grab_focus(GTK_WIDGET(search_entry));
+    update_search_mode_visuals(current_tab_is_full_text_search());
+
+    if (select_text) {
+        gtk_editable_select_region(GTK_EDITABLE(search_entry), 0, -1);
+    }
+}
+
+static void on_focus_search_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    (void)action; (void)parameter; (void)user_data;
+    reveal_search_entry(TRUE);
+}
+
+static void on_full_text_search_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    (void)action; (void)parameter; (void)user_data;
+
+    AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
+    if (!search_entry || !page) {
+        return;
+    }
+
+    gboolean enable_fts = !tab_page_is_full_text_search(page);
+    set_tab_full_text_search(page, enable_fts);
+
+    /* Apply icon + placeholder immediately — before reveal_search_entry so
+     * the user sees the correct state as soon as the entry appears. */
+    update_search_mode_visuals(enable_fts);
+
+    reveal_search_entry(TRUE);
+    g_clear_pointer(&fts_highlight_query, g_free);
+
+    if (search_execute_source_id != 0) {
+        g_source_remove(search_execute_source_id);
+        search_execute_source_id = 0;
+    }
+
+    cancel_sidebar_search();
+
+    const char *query = gtk_editable_get_text(GTK_EDITABLE(search_entry));
+    char *clean_query = normalize_headword_for_search(query, FALSE);
+    if (!clean_query || !*clean_query) {
+        if (enable_fts) {
+            populate_search_sidebar_status("Full Text Search", "Type a word or phrase to search all definitions.");
+        } else if (query && *query) {
+            populate_search_sidebar(query);
+        }
+        g_free(clean_query);
+        return;
+    }
+
+    g_free(clean_query);
+    if (!enable_fts) {
+        populate_search_sidebar(query);
+    }
+}
+
+static void set_current_web_view_zoom(double level) {
+    WebKitWebView *wv = get_current_web_view();
+    if (!wv) {
+        return;
+    }
+
+    webkit_web_view_set_zoom_level(wv, CLAMP(level, 0.5, 3.0));
+}
+
+static void adjust_current_web_view_zoom(double delta) {
+    WebKitWebView *wv = get_current_web_view();
+    if (!wv) {
+        return;
+    }
+
+    set_current_web_view_zoom(webkit_web_view_get_zoom_level(wv) + delta);
+}
+
+static void on_zoom_in_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    (void)action; (void)parameter; (void)user_data;
+    adjust_current_web_view_zoom(0.1);
+}
+
+static void on_zoom_out_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    (void)action; (void)parameter; (void)user_data;
+    adjust_current_web_view_zoom(-0.1);
+}
+
+static void on_zoom_reset_action(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
+    (void)action; (void)parameter; (void)user_data;
+    set_current_web_view_zoom(1.0);
+}
+
 static void show_settings_dialog(GSimpleAction *action, GVariant *parameter, gpointer user_data) {
     (void)action; (void)parameter;
     GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(user_data));
@@ -4465,14 +4767,14 @@ static void show_about_dialog(GSimpleAction *action, GVariant *parameter, gpoint
     (void)action; (void)parameter;
     GtkWindow *window = gtk_application_get_active_window(GTK_APPLICATION(user_data));
     if (window) {
-        const char *developers[] = { "Diction Contributors", NULL };
         AdwDialog *dialog = adw_about_dialog_new();
         adw_about_dialog_set_application_name(ADW_ABOUT_DIALOG(dialog), "Diction");
+        adw_about_dialog_set_application_icon(ADW_ABOUT_DIALOG(dialog), "io.github.fastrizwaan.diction");
         adw_about_dialog_set_comments(ADW_ABOUT_DIALOG(dialog), "A high-performance, multi-format offline dictionary.");
         adw_about_dialog_set_version(ADW_ABOUT_DIALOG(dialog), "0.1.0");
-        adw_about_dialog_set_developer_name(ADW_ABOUT_DIALOG(dialog), "Diction Contributors");
-        adw_about_dialog_set_developers(ADW_ABOUT_DIALOG(dialog), developers);
-        adw_about_dialog_set_copyright(ADW_ABOUT_DIALOG(dialog), "© 2024 Diction Contributors");
+        adw_about_dialog_set_developer_name(ADW_ABOUT_DIALOG(dialog), "Mohammed Asif Ali Rizvan");
+        adw_about_dialog_set_website(ADW_ABOUT_DIALOG(dialog), "https://github.com/fastrizwaan/diction");
+        adw_about_dialog_set_copyright(ADW_ABOUT_DIALOG(dialog), "© 2024 Mohammed Asif Ali Rizvan");
         adw_about_dialog_set_license(ADW_ABOUT_DIALOG(dialog), "GPL-3.0-or-later");
         adw_dialog_present(dialog, GTK_WIDGET(window));
     }
@@ -5332,10 +5634,7 @@ static void on_toggle_sidebar(GSimpleAction *action, GVariant *parameter, gpoint
 /* Removed update_content_menu_button_visibility */
 static void on_search_button_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn; (void)user_data;
-    if (search_stack && search_entry) {
-        gtk_stack_set_visible_child_name(search_stack, "entry");
-        gtk_widget_grab_focus(GTK_WIDGET(search_entry));
-    }
+    reveal_search_entry(FALSE);
 }
 
 static void on_search_entry_focus_leave(GtkEventControllerFocus *controller, gpointer user_data) {
@@ -5351,8 +5650,7 @@ static gboolean on_search_btn_drop(GtkDropTarget *target, const GValue *value, g
         const char *text = g_value_get_string(value);
         if (text && *text && search_entry && search_stack) {
             gtk_editable_set_text(GTK_EDITABLE(search_entry), text);
-            gtk_stack_set_visible_child_name(search_stack, "entry");
-            gtk_widget_grab_focus(GTK_WIDGET(search_entry));
+            reveal_search_entry(FALSE);
             return TRUE;
         }
     }
@@ -5402,12 +5700,9 @@ static void scan_word_callback(const char *word) {
         pending_activation_token = NULL;
     }
     gtk_window_present(main_window);
-    
+
     gtk_editable_set_text(GTK_EDITABLE(search_entry), word);
-    if (search_stack) {
-        gtk_stack_set_visible_child_name(search_stack, "entry");
-    }
-    gtk_widget_grab_focus(GTK_WIDGET(search_entry));
+    reveal_search_entry(FALSE);
 }
 
 static gboolean on_window_close_request(GtkWindow *window, gpointer user_data) {
@@ -5744,10 +6039,7 @@ static void on_new_tab_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn; (void)user_data;
     AdwTabPage *page = create_new_tab("Search", TRUE);
     (void)page;
-    if (search_stack && search_entry) {
-        gtk_stack_set_visible_child_name(search_stack, "entry");
-        gtk_widget_grab_focus(GTK_WIDGET(search_entry));
-    }
+    reveal_search_entry(FALSE);
 }
 
 static gboolean on_tab_close(AdwTabView *view, AdwTabPage *page, gpointer user_data) {
@@ -5792,6 +6084,7 @@ static AdwTabPage *create_new_tab(const char *title, gboolean select_it) {
     }
 
     g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), search_entry);
+    g_signal_connect(wv, "load-changed", G_CALLBACK(on_web_view_load_changed), NULL);
     WebKitFindController *fc = webkit_web_view_get_find_controller(wv);
     g_signal_connect(fc, "counted-matches", G_CALLBACK(on_find_counted_matches), NULL);
 
@@ -5803,6 +6096,7 @@ static AdwTabPage *create_new_tab(const char *title, gboolean select_it) {
     
     AdwTabPage *page = adw_tab_view_append(tab_view, web_scroll);
     adw_tab_page_set_title(page, title ? title : "Search");
+    set_tab_full_text_search(page, FALSE);
     
     if (select_it) {
         adw_tab_view_set_selected_page(tab_view, page);
@@ -5814,8 +6108,10 @@ static AdwTabPage *create_new_tab(const char *title, gboolean select_it) {
 static void on_tab_selected(AdwTabView *view, GParamSpec *pspec, gpointer user_data) {
     (void)pspec; (void)user_data;
     AdwTabPage *page = adw_tab_view_get_selected_page(view);
+    sync_full_text_search_action_state();
     if (page && search_entry) {
         const char *query = (const char *)g_object_get_data(G_OBJECT(page), "search-query");
+        gboolean is_fts = tab_page_is_full_text_search(page);
         
         g_signal_handlers_block_by_func(search_entry, on_search_changed, NULL);
         if (query) {
@@ -5828,6 +6124,21 @@ static void on_tab_selected(AdwTabView *view, GParamSpec *pspec, gpointer user_d
             if (search_button_label) gtk_label_set_text(GTK_LABEL(search_button_label), "Search");
         }
         g_signal_handlers_unblock_by_func(search_entry, on_search_changed, NULL);
+
+        if (is_fts) {
+            char *clean_query = normalize_headword_for_search(query, FALSE);
+            if (clean_query && *clean_query) {
+                populate_search_sidebar_with_mode(query, TRUE);
+            } else {
+                cancel_sidebar_search();
+                g_clear_pointer(&fts_highlight_query, g_free);
+                populate_search_sidebar_status("Full Text Search", "Type a word or phrase to search all definitions.");
+            }
+            g_free(clean_query);
+        } else {
+            populate_search_sidebar_with_mode(query, FALSE);
+        }
+        populate_dict_sidebar();
     }
 }
 
@@ -6024,9 +6335,17 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(nav_forward_btn, "clicked", G_CALLBACK(on_nav_forward_clicked), NULL);
     gtk_widget_set_sensitive(nav_forward_btn, FALSE);
 
-    search_entry = GTK_SEARCH_ENTRY(gtk_search_entry_new());
+    /* Use GtkEntry (not GtkSearchEntry) so we can set the primary icon freely
+     * via gtk_entry_set_icon_from_icon_name — GtkSearchEntry in GTK4 owns its
+     * icon slot and overrides any external set. */
+    search_entry = GTK_ENTRY(gtk_entry_new());
     gtk_widget_set_hexpand(GTK_WIDGET(search_entry), TRUE);
-    g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+    gtk_entry_set_placeholder_text(search_entry, "Search");
+    gtk_entry_set_icon_from_icon_name(search_entry, GTK_ENTRY_ICON_PRIMARY, "system-search-symbolic");
+    /* 'changed' fires on every keystroke; our schedule_execute_search debounces it. */
+    g_signal_connect(search_entry, "changed", G_CALLBACK(on_search_changed), NULL);
+    /* Activate (Enter key) triggers an immediate search */
+    g_signal_connect(search_entry, "activate", G_CALLBACK(execute_search_now), NULL);
 
     GtkEventController *focus_ctrl = gtk_event_controller_focus_new();
     g_signal_connect(focus_ctrl, "leave", G_CALLBACK(on_search_entry_focus_leave), NULL);
@@ -6034,8 +6353,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
     GtkWidget *btn_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_halign(btn_content, GTK_ALIGN_FILL);
-    GtkWidget *search_icon = gtk_image_new_from_icon_name("system-search-symbolic");
-    gtk_widget_set_opacity(search_icon, 0.7); // make icon slightly dim
+    search_mode_icon = GTK_IMAGE(gtk_image_new_from_icon_name("system-search-symbolic"));
+    gtk_widget_set_opacity(GTK_WIDGET(search_mode_icon), 0.7); // make icon slightly dim
     search_button_label = GTK_LABEL(gtk_label_new("Search"));
     gtk_widget_set_opacity(GTK_WIDGET(search_button_label), 0.7); // make label text dim
     gtk_label_set_ellipsize(search_button_label, PANGO_ELLIPSIZE_END);
@@ -6044,7 +6363,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     // Move label to the left
     gtk_widget_set_halign(GTK_WIDGET(search_button_label), GTK_ALIGN_START);
     
-    gtk_box_append(GTK_BOX(btn_content), search_icon);
+    gtk_box_append(GTK_BOX(btn_content), GTK_WIDGET(search_mode_icon));
     gtk_box_append(GTK_BOX(btn_content), GTK_WIDGET(search_button_label));
 
     search_button = GTK_BUTTON(gtk_button_new());
@@ -6064,6 +6383,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     search_stack = GTK_STACK(gtk_stack_new());
     gtk_stack_set_transition_type(search_stack, GTK_STACK_TRANSITION_TYPE_CROSSFADE);
     gtk_widget_set_hexpand(GTK_WIDGET(search_stack), TRUE);
+    update_search_mode_visuals(FALSE);
     
     gtk_stack_add_named(search_stack, button_box, "button");
     gtk_stack_add_named(search_stack, GTK_WIDGET(search_entry), "entry");
@@ -6084,9 +6404,16 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     adw_header_bar_pack_end(ADW_HEADER_BAR(content_header), zoom_to_restore_btn);
 
     GMenu *menu = g_menu_new();
+    GMenu *search_menu = g_menu_new();
+    g_menu_append(search_menu, "Full Text Search", "app.full-text-search");
+    g_menu_append_submenu(menu, "Search", G_MENU_MODEL(search_menu));
+    g_object_unref(search_menu);
     g_menu_append(menu, "Preferences", "app.settings");
     GMenu *view_menu = g_menu_new();
     g_menu_append(view_menu, "Show/Hide Sidebar", "app.toggle-sidebar");
+    g_menu_append(view_menu, "Zoom In", "app.zoom-in");
+    g_menu_append(view_menu, "Zoom Out", "app.zoom-out");
+    g_menu_append(view_menu, "Reset Zoom", "app.zoom-reset");
     g_menu_append_submenu(menu, "View", G_MENU_MODEL(view_menu));
     g_object_unref(view_menu);
     g_menu_append(menu, "About", "app.about");
@@ -6122,6 +6449,26 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(find_action, "activate", G_CALLBACK(on_find_action), NULL);
     g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(find_action));
 
+    GSimpleAction *focus_search_action = g_simple_action_new("focus-search", NULL);
+    g_signal_connect(focus_search_action, "activate", G_CALLBACK(on_focus_search_action), NULL);
+    g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(focus_search_action));
+
+    full_text_search_toggle_action = g_simple_action_new("full-text-search", NULL);
+    g_signal_connect(full_text_search_toggle_action, "activate", G_CALLBACK(on_full_text_search_action), NULL);
+    g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(full_text_search_toggle_action));
+
+    GSimpleAction *zoom_in_action = g_simple_action_new("zoom-in", NULL);
+    g_signal_connect(zoom_in_action, "activate", G_CALLBACK(on_zoom_in_action), NULL);
+    g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(zoom_in_action));
+
+    GSimpleAction *zoom_out_action = g_simple_action_new("zoom-out", NULL);
+    g_signal_connect(zoom_out_action, "activate", G_CALLBACK(on_zoom_out_action), NULL);
+    g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(zoom_out_action));
+
+    GSimpleAction *zoom_reset_action = g_simple_action_new("zoom-reset", NULL);
+    g_signal_connect(zoom_reset_action, "activate", G_CALLBACK(on_zoom_reset_action), NULL);
+    g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(zoom_reset_action));
+
     GtkShortcutController *shortcut_ctrl = GTK_SHORTCUT_CONTROLLER(gtk_shortcut_controller_new());
     gtk_shortcut_controller_set_scope(shortcut_ctrl, GTK_SHORTCUT_SCOPE_GLOBAL);
     gtk_widget_add_controller(GTK_WIDGET(window), GTK_EVENT_CONTROLLER(shortcut_ctrl));
@@ -6137,6 +6484,21 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_shortcut_controller_add_shortcut(shortcut_ctrl, gtk_shortcut_new(
         gtk_keyval_trigger_new(GDK_KEY_Escape, 0),
         gtk_callback_action_new((GtkShortcutFunc)on_find_shortcut_close, NULL, NULL)));
+
+    const char *focus_search_accels[] = { "<Primary>l", "<Alt>d", NULL };
+    gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.focus-search", focus_search_accels);
+
+    const char *full_text_search_accels[] = { "<Primary><Shift>f", NULL };
+    gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.full-text-search", full_text_search_accels);
+
+    const char *zoom_in_accels[] = { "<Primary>equal", "<Primary>plus", "<Primary>KP_Add", NULL };
+    gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.zoom-in", zoom_in_accels);
+
+    const char *zoom_out_accels[] = { "<Primary>minus", "<Primary>KP_Subtract", NULL };
+    gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.zoom-out", zoom_out_accels);
+
+    const char *zoom_reset_accels[] = { "<Primary>0", "<Primary>KP_0", NULL };
+    gtk_application_set_accels_for_action(GTK_APPLICATION(app), "app.zoom-reset", zoom_reset_accels);
 
     gboolean had_cached_entries = FALSE;
     gboolean discover_from_dirs = FALSE;

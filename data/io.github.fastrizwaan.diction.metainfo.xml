@@ -15,5 +15,8 @@
       <li>Works fully offline</li>
     </ul>
   </description>
+  <url type="homepage">https://github.com/fastrizwaan/diction</url>
+  <url type="bugtracker">https://github.com/fastrizwaan/diction/issues</url>
+  <url type="vcs-browser">https://github.com/fastrizwaan/diction</url>
   <launchable type="desktop-id">io.github.fastrizwaan.diction.desktop</launchable>
 </component>
