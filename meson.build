@@ -72,9 +72,10 @@ install_data(
   install_dir: join_paths(get_option('datadir'), 'icons', 'hicolor', 'scalable', 'apps')
 )
 
-# Install dice3 symbolic icon (Matches your pyproject requirement)
+# Install symbolic icons
 install_data(
   'data/icons/hicolor/scalable/actions/dice3-symbolic.svg',
+  'data/icons/hicolor/scalable/actions/search-dictionary-symbolic.svg',
   install_dir: join_paths(get_option('datadir'), 'icons', 'hicolor', 'scalable', 'actions')
 )
 
