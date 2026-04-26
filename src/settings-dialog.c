@@ -41,6 +41,7 @@ typedef struct _SettingsDialogData {
     GtkWidget          *move_down_btn;
     GtkWidget          *create_group_btn;
     char               *selected_dict_id;
+    gboolean            rebuilding_dict_list;
     GHashTable         *group_selection_ids;
     guint               banner_timeout_id;
     guint               session_added_count;
@@ -71,9 +72,21 @@ static void present_dictionary_feedback(SettingsDialogData *data,
                                         const char *title);
 static gboolean settings_dialog_is_active(SettingsDialogData *data);
 static char *format_name_list(GPtrArray *names);
+static void settings_dialog_set_selected_dict_id(SettingsDialogData *data, const char *id);
 
 static gboolean settings_dialog_is_active(SettingsDialogData *data) {
     return data && !data->closed;
+}
+
+static void settings_dialog_set_selected_dict_id(SettingsDialogData *data, const char *id) {
+    if (!data) {
+        return;
+    }
+
+    g_clear_pointer(&data->selected_dict_id, g_free);
+    if (id && *id) {
+        data->selected_dict_id = g_strdup(id);
+    }
 }
 
 static void refresh_dictionary_lists(SettingsDialogData *data) {
@@ -97,7 +110,7 @@ static void settings_dialog_data_free(gpointer user_data) {
         g_source_remove(data->banner_timeout_id);
     }
 
-    g_free(data->selected_dict_id);
+    g_clear_pointer(&data->selected_dict_id, g_free);
     if (data->group_selection_ids) {
         g_hash_table_unref(data->group_selection_ids);
     }
@@ -1227,8 +1240,7 @@ static void on_remove_dictionary_clicked(GtkButton *btn, DictRemoveData *d) {
     g_hash_table_remove(d->data->group_selection_ids, id_copy);
     if (d->data->selected_dict_id &&
         strcmp(d->data->selected_dict_id, id_copy) == 0) {
-        g_free(d->data->selected_dict_id);
-        d->data->selected_dict_id = NULL;
+        settings_dialog_set_selected_dict_id(d->data, NULL);
     }
     g_free(id_copy);
     /* Save immediately so a re-scan doesn't re-add it */
@@ -1274,13 +1286,15 @@ static gboolean on_dict_switch_state(GtkSwitch *sw, gboolean state, DictSwitchDa
 
 static void on_dict_row_selected(GtkListBox *list, GtkListBoxRow *row, SettingsDialogData *data) {
     (void)list;
-    g_free(data->selected_dict_id);
-    data->selected_dict_id = NULL;
+    if (!settings_dialog_is_active(data) || data->rebuilding_dict_list) {
+        return;
+    }
 
     if (row) {
         const char *id = g_object_get_data(G_OBJECT(row), "dict-id");
-        if (id)
-            data->selected_dict_id = g_strdup(id);
+        settings_dialog_set_selected_dict_id(data, id);
+    } else {
+        settings_dialog_set_selected_dict_id(data, NULL);
     }
     refresh_move_buttons(data);
 }
@@ -1494,7 +1508,19 @@ static void update_dir_list(SettingsDialogData *data) {
 }
 
 static void update_dict_list(SettingsDialogData *data) {
+    char *previous_selection = NULL;
+    GtkListBoxRow *selected_row = NULL;
     GtkWidget *child;
+
+    if (!settings_dialog_is_active(data)) {
+        return;
+    }
+
+    previous_selection = g_strdup(data->selected_dict_id);
+    data->rebuilding_dict_list = TRUE;
+    settings_dialog_set_selected_dict_id(data, NULL);
+    gtk_list_box_unselect_all(data->dict_list);
+
     while ((child = gtk_widget_get_first_child(GTK_WIDGET(data->dict_list))))
         gtk_list_box_remove(data->dict_list, child);
 
@@ -1505,6 +1531,8 @@ static void update_dict_list(SettingsDialogData *data) {
             "Add a dictionary file or rescan configured directories.");
         gtk_widget_set_sensitive(row, FALSE);
         gtk_list_box_append(data->dict_list, GTK_WIDGET(row));
+        data->rebuilding_dict_list = FALSE;
+        g_free(previous_selection);
         refresh_move_buttons(data);
         return;
     }
@@ -1575,8 +1603,19 @@ static void update_dict_list(SettingsDialogData *data) {
         adw_action_row_add_suffix(ADW_ACTION_ROW(row), remove_btn);
 
         gtk_list_box_append(data->dict_list, GTK_WIDGET(row));
+
+        if (previous_selection && strcmp(previous_selection, cfg->id) == 0) {
+            selected_row = GTK_LIST_BOX_ROW(row);
+        }
     }
 
+    if (selected_row) {
+        gtk_list_box_select_row(data->dict_list, selected_row);
+        settings_dialog_set_selected_dict_id(data, previous_selection);
+    }
+
+    data->rebuilding_dict_list = FALSE;
+    g_free(previous_selection);
     refresh_move_buttons(data);
     update_dictionary_overview(data);
 }

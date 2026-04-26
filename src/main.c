@@ -477,8 +477,10 @@ typedef struct {
     guint query_compact_len;
     gboolean skip_fast_prefilter;
     GHashTable *seen_words;
-    DictEntry *current_entry;
+    GPtrArray *search_entries;
+    guint current_entry_index;
     DictEntry *current_dict;
+    size_t current_dict_count;
     size_t current_pos;  /* position in flat index */
     gboolean has_current_pos;
     gboolean list_started;
@@ -500,6 +502,7 @@ typedef enum {
 typedef struct {
     RelatedRowType type;
     char *word;
+    char *sort_key;
     double fuzzy_score;
 } RelatedRowPayload;
 
@@ -957,6 +960,7 @@ static void related_row_payload_free(RelatedRowPayload *payload) {
         return;
     }
     g_free(payload->word);
+    g_free(payload->sort_key);
     g_free(payload);
 }
 
@@ -1288,16 +1292,25 @@ static void sidebar_search_state_free(SidebarSearchState *state) {
         g_hash_table_unref(state->seen_words);
     }
     for (int i = 0; i < BUCKET_COUNT; i++) {
-        if (state->global_bucket_labels[i])
+        if (state->global_bucket_labels[i]) {
+            for (guint j = 0; j < state->global_bucket_labels[i]->len; j++) {
+                g_free(g_ptr_array_index(state->global_bucket_labels[i], j));
+            }
             g_ptr_array_free(state->global_bucket_labels[i], TRUE);
+        }
         if (state->global_bucket_payloads[i]) {
+            for (guint j = 0; j < state->global_bucket_payloads[i]->len; j++) {
+                related_row_payload_free(g_ptr_array_index(state->global_bucket_payloads[i], j));
+            }
             g_ptr_array_free(state->global_bucket_payloads[i], TRUE);
         }
     }
     if (state->fts_regex) {
         g_regex_unref(state->fts_regex);
     }
-    if (state->current_entry) dict_entry_unref(state->current_entry);
+    if (state->search_entries) {
+        g_ptr_array_free(state->search_entries, TRUE);
+    }
     if (state->current_dict) dict_entry_unref(state->current_dict);
     g_free(state);
 }
@@ -1731,6 +1744,29 @@ static gboolean fast_strncasestr(const char *haystack, size_t haystack_len, cons
     return FALSE;
 }
 
+static GPtrArray *build_search_entry_list(void) {
+    GPtrArray *entries = g_ptr_array_new_with_free_func((GDestroyNotify)dict_entry_unref);
+
+    g_mutex_lock(&dict_loader_mutex);
+    for (DictEntry *entry = all_dicts; entry; entry = entry->next) {
+        dict_entry_ref(entry);
+        g_mutex_unlock(&dict_loader_mutex);
+
+        if (entry->dict && entry->dict->index &&
+            flat_index_count(entry->dict->index) > 0 &&
+            dict_entry_in_active_scope(entry)) {
+            g_ptr_array_add(entries, entry);
+        } else {
+            dict_entry_unref(entry);
+        }
+
+        g_mutex_lock(&dict_loader_mutex);
+    }
+    g_mutex_unlock(&dict_loader_mutex);
+
+    return entries;
+}
+
 static gboolean continue_sidebar_search(gpointer user_data) {
     SidebarSearchState *state = user_data;
     if (!state || state != sidebar_search_state) {
@@ -1741,24 +1777,24 @@ static gboolean continue_sidebar_search(gpointer user_data) {
     const guint max_batch_size = 512;
     gint64 deadline_us = g_get_monotonic_time() + 2000;
     while (processed < max_batch_size && g_get_monotonic_time() < deadline_us) {
-        if (!state->current_entry && !state->has_current_pos) {
+        if ((!state->search_entries || state->current_entry_index >= state->search_entries->len) &&
+            !state->has_current_pos) {
             // END OF SEARCH - DO GLOBAL SORT & FLUSH
             for (int i = 0; i < BUCKET_COUNT; i++) {
                 guint n = state->global_bucket_labels[i]->len;
                 if (n > 1) {
                     BucketItem *items = g_new(BucketItem, n);
                     for (guint j = 0; j < n; j++) {
-                        char *label = g_ptr_array_index(state->global_bucket_labels[i], j);
-                        items[j].label = label;
-                        items[j].sort_key = g_utf8_casefold(label, -1);
-                        items[j].payload = g_ptr_array_index(state->global_bucket_payloads[i], j);
+                        RelatedRowPayload *row_payload = g_ptr_array_index(state->global_bucket_payloads[i], j);
+                        items[j].label = g_ptr_array_index(state->global_bucket_labels[i], j);
+                        items[j].sort_key = row_payload ? row_payload->sort_key : NULL;
+                        items[j].payload = row_payload;
                         items[j].score = items[j].payload ? items[j].payload->fuzzy_score : 0.0;
                     }
                     g_sort_array(items, n, sizeof(BucketItem), compare_bucket_item, GINT_TO_POINTER(i));
                     for (guint j = 0; j < n; j++) {
                         g_ptr_array_index(state->global_bucket_labels[i], j) = items[j].label;
                         g_ptr_array_index(state->global_bucket_payloads[i], j) = items[j].payload;
-                        g_free(items[j].sort_key);
                     }
                     g_free(items);
                 }
@@ -1771,6 +1807,8 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                 } else {
                     append_related_rows(state->global_bucket_labels[i], state->global_bucket_payloads[i]);
                 }
+                g_ptr_array_set_size(state->global_bucket_labels[i], 0);
+                g_ptr_array_set_size(state->global_bucket_payloads[i], 0);
             }
 
             if (!state->list_started &&
@@ -1785,22 +1823,12 @@ static gboolean continue_sidebar_search(gpointer user_data) {
 
         if (!state->has_current_pos) {
             gboolean found_dict = FALSE;
-            while (state->current_entry) {
-                DictEntry *entry = state->current_entry;
-                dict_entry_ref(entry);
-                state->current_entry = state->current_entry->next;
-                if (state->current_entry) dict_entry_ref(state->current_entry);
-                
-                // Unref the old entry pointer we just moved past
-                dict_entry_unref(entry);
-                
-                if (!entry->dict || !entry->dict->index ||
-                    flat_index_count(entry->dict->index) == 0 ||
-                    !dict_entry_in_active_scope(entry)) {
-                    continue;
-                }
+            while (state->search_entries &&
+                   state->current_entry_index < state->search_entries->len) {
+                DictEntry *entry = g_ptr_array_index(state->search_entries, state->current_entry_index++);
                 state->current_pos = 0;
                 state->has_current_pos = TRUE;
+                state->current_dict_count = flat_index_count(entry->dict->index);
                 
                 if (state->current_dict) dict_entry_unref(state->current_dict);
                 state->current_dict = entry;
@@ -1832,7 +1860,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             }
             size_t match_pos = flat_index_search_fts(state->current_dict->dict->index, state->fts_regex, state->current_pos);
             if (match_pos == (size_t)-1) {
-                processed += flat_index_count(state->current_dict->dict->index) - state->current_pos;
+                processed += state->current_dict_count - state->current_pos;
                 state->has_current_pos = FALSE;
                 continue;
             }
@@ -1840,7 +1868,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
             state->current_pos = match_pos;
             node = flat_index_get(state->current_dict->dict->index, state->current_pos);
             state->current_pos++;
-            if (state->current_pos >= flat_index_count(state->current_dict->dict->index)) {
+            if (state->current_pos >= state->current_dict_count) {
                 state->has_current_pos = FALSE;
             }
         } else {
@@ -1850,7 +1878,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                 continue;
             }
             state->current_pos++;
-            if (state->current_pos >= flat_index_count(state->current_dict->dict->index)) {
+            if (state->current_pos >= state->current_dict_count) {
                 state->has_current_pos = FALSE;
             }
 
@@ -1898,6 +1926,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                     /* Use rendering normalization for display in sidebar (strip dots) */
                     char *display_word = normalize_headword_for_render(word, node->h_len, TRUE);
                     payload->word = g_strdup(word);
+                    payload->sort_key = g_utf8_casefold(display_word ? display_word : "", -1);
                     
                     payload->fuzzy_score = fuzzy_score;
                     g_hash_table_add(state->seen_words, g_strdup(word_key));
@@ -1914,10 +1943,10 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                         if (n > 1) {
                             BucketItem *items = g_new(BucketItem, n);
                             for (guint j = 0; j < n; j++) {
-                                char *label = g_ptr_array_index(state->global_bucket_labels[b], j);
-                                items[j].label = label;
-                                items[j].sort_key = g_utf8_casefold(label, -1);
-                                items[j].payload = g_ptr_array_index(state->global_bucket_payloads[b], j);
+                                RelatedRowPayload *row_payload = g_ptr_array_index(state->global_bucket_payloads[b], j);
+                                items[j].label = g_ptr_array_index(state->global_bucket_labels[b], j);
+                                items[j].sort_key = row_payload ? row_payload->sort_key : NULL;
+                                items[j].payload = row_payload;
                                 items[j].score = items[j].payload ? items[j].payload->fuzzy_score : 0.0;
                             }
 
@@ -1926,7 +1955,6 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                             for (guint j = 0; j < n; j++) {
                                 g_ptr_array_index(state->global_bucket_labels[b], j) = items[j].label;
                                 g_ptr_array_index(state->global_bucket_payloads[b], j) = items[j].payload;
-                                g_free(items[j].sort_key);
                             }
                             g_free(items);
                         }
@@ -1947,7 +1975,11 @@ static gboolean continue_sidebar_search(gpointer user_data) {
         }
 
         if (!state->has_current_pos) {
-            state->current_dict = NULL;
+            if (state->current_dict) {
+                dict_entry_unref(state->current_dict);
+                state->current_dict = NULL;
+            }
+            state->current_dict_count = 0;
         }
 
         g_free(word);
@@ -1975,17 +2007,9 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
     gint64 deadline_us = g_get_monotonic_time() + 5000; /* 5ms UI thread budget */
     guint added = 0;
 
-    g_mutex_lock(&dict_loader_mutex);
-    for (DictEntry *entry = all_dicts; entry && added < max_seed_rows; entry = entry->next) {
+    for (guint idx = 0; state->search_entries && idx < state->search_entries->len && added < max_seed_rows; idx++) {
         if (g_get_monotonic_time() > deadline_us) break;
-        dict_entry_ref(entry);
-        g_mutex_unlock(&dict_loader_mutex);
-
-        if (!entry->dict || !entry->dict->index || !dict_entry_in_active_scope(entry)) {
-            dict_entry_unref(entry);
-            g_mutex_lock(&dict_loader_mutex);
-            continue;
-        }
+        DictEntry *entry = g_ptr_array_index(state->search_entries, idx);
 
         size_t pos = flat_index_search_prefix(entry->dict->index, state->query);
         while (pos != (size_t)-1 && added < max_seed_rows) {
@@ -2017,6 +2041,7 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
                         RelatedRowPayload *payload = g_new0(RelatedRowPayload, 1);
                         payload->type = RELATED_ROW_CANDIDATE;
                         payload->word = g_strdup(raw_word);
+                        payload->sort_key = g_utf8_casefold(display_word ? display_word : "", -1);
                         payload->fuzzy_score = score;
 
                         g_hash_table_add(state->seen_words, g_strdup(word_key));
@@ -2038,15 +2063,13 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
             pos++;
             if (pos >= flat_index_count(entry->dict->index)) break;
         }
-        
-        dict_entry_unref(entry);
-        g_mutex_lock(&dict_loader_mutex);
     }
-    g_mutex_unlock(&dict_loader_mutex);
 
     if (labels->len > 0) {
         set_related_rows(labels, payloads);
         state->list_started = TRUE;
+        g_ptr_array_set_size(labels, 0);
+        g_ptr_array_set_size(payloads, 0);
     }
 
     g_ptr_array_free(labels, TRUE);
@@ -2093,10 +2116,7 @@ static void populate_search_sidebar_with_mode(const char *query, gboolean force_
 
     sidebar_search_state->seen_words = g_hash_table_new_full(
         g_str_hash, g_str_equal, g_free, NULL);
-    g_mutex_lock(&dict_loader_mutex);
-    sidebar_search_state->current_entry = all_dicts;
-    if (sidebar_search_state->current_entry) dict_entry_ref(sidebar_search_state->current_entry);
-    g_mutex_unlock(&dict_loader_mutex);
+    sidebar_search_state->search_entries = build_search_entry_list();
     
     /* Update FTS highlight query based on current search */
     g_free(fts_highlight_query);
@@ -2209,7 +2229,6 @@ static gboolean dict_entry_in_scope(DictEntry *entry, const char *scope_id) {
         return TRUE;
     }
 
-    char *dict_id = settings_make_dictionary_id(entry->path);
     gboolean allowed = FALSE;
     for (guint i = 0; i < app_settings->dictionary_groups->len; i++) {
         DictGroup *grp = g_ptr_array_index(app_settings->dictionary_groups, i);
@@ -2218,14 +2237,13 @@ static gboolean dict_entry_in_scope(DictEntry *entry, const char *scope_id) {
         }
         for (guint j = 0; j < grp->members->len; j++) {
             const char *member = g_ptr_array_index(grp->members, j);
-            if (g_strcmp0(member, dict_id) == 0) {
+            if (g_strcmp0(member, entry->dict_id) == 0) {
                 allowed = TRUE;
                 break;
             }
         }
         break;
     }
-    g_free(dict_id);
     return allowed;
 }
 
@@ -2555,6 +2573,7 @@ static DictEntry *dict_entry_new_shell(const char *name, const char *path) {
     DictEntry *entry = g_new0(DictEntry, 1);
     entry->format = dict_detect_format(path);
     entry->path = g_strdup(path);
+    entry->dict_id = settings_make_dictionary_id(path);
     entry->name = g_strdup((name && *name) ? name : path);
     entry->ref_count = 1; entry->magic = 0xDEADC0DE;
     return entry;
@@ -2614,6 +2633,8 @@ static guint rebuild_dict_entries_from_settings(void) {
                 if (g_strcmp0(entry->path, cfg->path) != 0) {
                     g_free(entry->path);
                     entry->path = g_strdup(cfg->path);
+                    g_free(entry->dict_id);
+                    entry->dict_id = settings_make_dictionary_id(cfg->path);
                 }
                 entry->format = dict_detect_format(cfg->path);
                 entry->has_matches = FALSE;
@@ -2858,16 +2879,14 @@ static void populate_groups_sidebar(void) {
             g_mutex_unlock(&dict_loader_mutex);
             
             if (dict_entry_enabled(entry)) {
-                char *dict_id = settings_make_dictionary_id(entry->path);
-                if (dict_id) {
+                if (entry->dict_id) {
                     for (guint j = 0; j < grp->members->len; j++) {
                         const char *member = g_ptr_array_index(grp->members, j);
-                        if (g_strcmp0(member, dict_id) == 0) {
+                        if (g_strcmp0(member, entry->dict_id) == 0) {
                             member_count++;
                             break;
                         }
                     }
-                    g_free(dict_id);
                 }
             }
             
@@ -5298,6 +5317,7 @@ static DictEntry *create_dict_entry_from_loaded(const char *path, DictFormat fmt
     char *valid_path = g_utf8_make_valid(path, -1);
     entry->path = g_strdup(valid_path);
     g_free(valid_path);
+    entry->dict_id = settings_make_dictionary_id(entry->path);
 
     /* Propagate icon detected by the parser / dict-loader fallback */
     if (dict->icon_path) {
@@ -5491,11 +5511,10 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
                     existing->guessed_lang_group = g_strdup(guessed);
                 }
                 if (app_settings) {
-                    char *dict_id = settings_make_dictionary_id(e->path);
-                    if (settings_upsert_guessed_group(app_settings, guessed, dict_id)) {
+                    if (e->dict_id &&
+                        settings_upsert_guessed_group(app_settings, guessed, e->dict_id)) {
                         populate_groups_sidebar();
                     }
-                    g_free(dict_id);
                 }
             }
             g_free(guessed);

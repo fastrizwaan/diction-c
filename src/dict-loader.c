@@ -1,5 +1,6 @@
 #include "dict-loader.h"
 #include "dict-cache.h"
+#include "settings.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -557,6 +558,7 @@ void dict_entry_unref(DictEntry *entry) {
         if (entry->dict) dict_mmap_close(entry->dict);
         g_free(entry->name);
         g_free(entry->path);
+        g_free(entry->dict_id);
         g_free(entry->guessed_lang_group);
         g_free(entry->icon_path);
         g_free(entry);

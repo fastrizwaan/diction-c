@@ -18,6 +18,7 @@ typedef enum {
 typedef struct DictEntry {
     char *name;           /* Display name (from metadata or filename) */
     char *path;           /* Absolute path to the primary file */
+    char *dict_id;        /* Cached stable dictionary id derived from path */
     DictFormat format;
     DictMmap *dict;       /* The loaded, mapped, indexed dictionary */
     gboolean has_matches; /* Set during search if this dict has matches */
