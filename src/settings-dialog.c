@@ -387,6 +387,8 @@ static void on_rescan_directories(GtkButton *btn, SettingsDialogData *data) {
         }
     }
     dirs[n] = NULL;
+    extern void force_next_dictionary_directory_rescan(void);
+    force_next_dictionary_directory_rescan();
     extern void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs, gboolean call_reload);
     show_scan_dialog_for_dirs(data, dirs, n, TRUE);
 }
@@ -414,6 +416,8 @@ typedef struct {
     char **scan_dirs;
     int n_scan_dirs;
     GHashTable *row_map; /* map path -> GtkWidget* row for progress updates */
+    gint ref_count;
+    gint closed;
 } ScanContext;
 
 typedef struct {
@@ -434,9 +438,63 @@ typedef struct {
 
 /* Active scan contexts registered when integrating with the main loader */
 static GList *active_scan_contexts = NULL;
+static GMutex active_scan_contexts_mutex;
+
+static ScanContext *scan_context_ref(ScanContext *ctx) {
+    if (ctx) {
+        g_atomic_int_inc(&ctx->ref_count);
+    }
+    return ctx;
+}
+
+static void scan_context_unref(ScanContext *ctx) {
+    if (!ctx || !g_atomic_int_dec_and_test(&ctx->ref_count)) {
+        return;
+    }
+
+    if (ctx->scan_dirs) {
+        for (int i = 0; i < ctx->n_scan_dirs; i++) {
+            g_free(ctx->scan_dirs[i]);
+        }
+        g_free(ctx->scan_dirs);
+    }
+    if (ctx->row_map) {
+        g_hash_table_destroy(ctx->row_map);
+    }
+    g_free(ctx);
+}
+
+static gboolean scan_context_is_closed(ScanContext *ctx) {
+    return !ctx || g_atomic_int_get(&ctx->closed) != 0;
+}
+
+static gboolean scan_context_matches_path(ScanContext *ctx,
+                                          const char *canonical_path,
+                                          int event_type) {
+    if (!ctx || !ctx->call_reload) {
+        return FALSE;
+    }
+    if (event_type == -1) {
+        return TRUE;
+    }
+    if (!canonical_path || !*canonical_path) {
+        return FALSE;
+    }
+    if (!ctx->scan_dirs || ctx->n_scan_dirs == 0) {
+        return TRUE;
+    }
+
+    for (int i = 0; i < ctx->n_scan_dirs; i++) {
+        if (ctx->scan_dirs[i] && g_str_has_prefix(canonical_path, ctx->scan_dirs[i])) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
 
 static void scan_context_update_processing_status(ScanContext *ctx) {
-    if (!ctx || !ctx->status_label) {
+    if (scan_context_is_closed(ctx) || !ctx->status_label) {
         return;
     }
 
@@ -447,7 +505,7 @@ static void scan_context_update_processing_status(ScanContext *ctx) {
 }
 
 static void scan_context_finish_ui_if_ready(ScanContext *ctx) {
-    if (!ctx || ctx->completion_handled ||
+    if (scan_context_is_closed(ctx) || ctx->completion_handled ||
         !ctx->scan_done_received || ctx->processed_count < ctx->found_count) {
         return;
     }
@@ -491,6 +549,14 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
     ScanIdleData *sid = user_data;
     ScanContext *ctx = sid->ctx;
 
+    if (scan_context_is_closed(ctx)) {
+        g_free(sid->name);
+        g_free(sid->path);
+        scan_context_unref(ctx);
+        g_free(sid);
+        return G_SOURCE_REMOVE;
+    }
+
     if (sid->is_status_update) {
         if (ctx->status_label) {
             gtk_label_set_text(GTK_LABEL(ctx->status_label), sid->name ? sid->name : "");
@@ -511,7 +577,10 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
         if (sid->path && ctx->row_map) {
             gpointer existing = g_hash_table_lookup(ctx->row_map, sid->path);
             if (existing) {
-                g_free(sid->name); g_free(sid->path); g_free(sid);
+                g_free(sid->name);
+                g_free(sid->path);
+                scan_context_unref(ctx);
+                g_free(sid);
                 return G_SOURCE_REMOVE;
             }
         }
@@ -580,6 +649,7 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
 
     g_free(sid->name);
     g_free(sid->path);
+    scan_context_unref(ctx);
     g_free(sid);
     return G_SOURCE_REMOVE;
 }
@@ -594,7 +664,7 @@ static void scan_worker_callback(DictEntry *entry, DictLoaderEventType event, vo
     char *path_copy = (entry && entry->path) ? normalize_scan_path(entry->path) : g_strdup("");
 
     ScanIdleData *sid = g_new0(ScanIdleData, 1);
-    sid->ctx = ctx;
+    sid->ctx = scan_context_ref(ctx);
     sid->name = name_copy;
     sid->path = path_copy;
     sid->event_type = (int)event;
@@ -622,7 +692,7 @@ static gpointer scan_thread_func(gpointer user_data) {
                    i + 1, args->n_dirs, args->dirs[i]);
         /* Update status label on main thread */
         ScanIdleData *st = g_new0(ScanIdleData, 1);
-        st->ctx = ctx;
+        st->ctx = scan_context_ref(ctx);
         st->name = g_strdup(status_buf);
         st->path = g_strdup("");
         st->event_type = (int)DICT_LOADER_EVENT_STARTED;
@@ -633,7 +703,7 @@ static gpointer scan_thread_func(gpointer user_data) {
 
     /* Signal completion */
     ScanIdleData *done = g_new0(ScanIdleData, 1);
-    done->ctx = ctx;
+    done->ctx = scan_context_ref(ctx);
     done->name = g_strdup("done");
     done->path = g_strdup("");
     done->event_type = -1;
@@ -644,6 +714,7 @@ static gpointer scan_thread_func(gpointer user_data) {
         g_free(args->dirs[i]);
     g_free(args->dirs);
     g_free(args);
+    scan_context_unref(ctx);
     return NULL;
 }
 
@@ -671,39 +742,46 @@ static void on_scan_close_clicked(GtkButton *btn, ScanContext *ctx) {
 }
 
 static void on_scan_dialog_closed(ScanContext *ctx) {
-    /* Remove from global registry and free context-owned resources. */
-    active_scan_contexts = g_list_remove(active_scan_contexts, ctx);
-    if (ctx->scan_dirs) {
-        for (int i = 0; i < ctx->n_scan_dirs; i++) g_free(ctx->scan_dirs[i]);
-        g_free(ctx->scan_dirs);
+    if (!ctx) {
+        return;
     }
-    if (ctx->row_map) g_hash_table_destroy(ctx->row_map);
-    g_free(ctx);
+
+    g_atomic_int_set(&ctx->closed, 1);
+    if (!ctx->call_reload) {
+        g_atomic_int_inc(&ctx->generation);
+    }
+
+    g_mutex_lock(&active_scan_contexts_mutex);
+    active_scan_contexts = g_list_remove(active_scan_contexts, ctx);
+    g_mutex_unlock(&active_scan_contexts_mutex);
+
+    ctx->dialog = NULL;
+    ctx->list = NULL;
+    ctx->status_label = NULL;
+    ctx->spinner = NULL;
+    ctx->cancel_btn = NULL;
+    ctx->close_btn = NULL;
+
+    scan_context_unref(ctx);
 }
 
 /* Called by main loader to notify UI of discovered dictionaries. */
 void settings_scan_notify(const char *name, const char *path, int event_type) {
-    if (!active_scan_contexts) return;
-    
+    GPtrArray *targets = g_ptr_array_new();
     /* Precompute a canonical path used for matching / row keys */
     char *canonical_path = normalize_scan_path(path);
+    g_mutex_lock(&active_scan_contexts_mutex);
     for (GList *l = active_scan_contexts; l; l = l->next) {
         ScanContext *ctx = l->data;
-        /* Only notify contexts that requested integration */
-        if (!ctx->call_reload) continue;
-
-        /* If this context has a dir filter, ensure canonical path matches one of them */
-        gboolean match = FALSE;
-        if (event_type == -1) match = TRUE; /* always notify completion */
-        else if (!canonical_path || *canonical_path == '\0') match = FALSE;
-        else if (!ctx->scan_dirs || ctx->n_scan_dirs == 0) match = TRUE;
-        else {
-            for (int i = 0; i < ctx->n_scan_dirs; i++) {
-                if (ctx->scan_dirs[i] && g_str_has_prefix(canonical_path, ctx->scan_dirs[i])) { match = TRUE; break; }
-            }
+        if (!scan_context_is_closed(ctx) &&
+            scan_context_matches_path(ctx, canonical_path, event_type)) {
+            g_ptr_array_add(targets, scan_context_ref(ctx));
         }
-        if (!match) continue;
+    }
+    g_mutex_unlock(&active_scan_contexts_mutex);
 
+    for (guint i = 0; i < targets->len; i++) {
+        ScanContext *ctx = g_ptr_array_index(targets, i);
         ScanIdleData *sid = g_new0(ScanIdleData, 1);
         sid->ctx = ctx;
         sid->name = name ? g_strdup(name) : g_strdup("");
@@ -712,6 +790,7 @@ void settings_scan_notify(const char *name, const char *path, int event_type) {
         sid->event_type = event_type;
         g_idle_add(scan_idle_add_entry, sid);
     }
+    g_ptr_array_free(targets, TRUE);
     g_free(canonical_path);
 }
 
@@ -719,24 +798,21 @@ void settings_scan_notify(const char *name, const char *path, int event_type) {
  * dictionary path. Percent should be 0..100. This posts an idle to update
  * the UI row subtitle for the matching path. */
 void settings_scan_progress_notify(const char *path, int percent) {
-    if (!active_scan_contexts) return;
+    GPtrArray *targets = g_ptr_array_new();
     /* Precompute canonical path for matching and row lookup */
     char *canonical_path = normalize_scan_path(path);
+    g_mutex_lock(&active_scan_contexts_mutex);
     for (GList *l = active_scan_contexts; l; l = l->next) {
         ScanContext *ctx = l->data;
-        if (!ctx->call_reload) continue;
-
-        /* If this context has a dir filter, ensure canonical path matches one of them */
-        gboolean match = FALSE;
-        if (!canonical_path || *canonical_path == '\0') match = FALSE;
-        else if (!ctx->scan_dirs || ctx->n_scan_dirs == 0) match = TRUE;
-        else {
-            for (int i = 0; i < ctx->n_scan_dirs; i++) {
-                if (ctx->scan_dirs[i] && g_str_has_prefix(canonical_path, ctx->scan_dirs[i])) { match = TRUE; break; }
-            }
+        if (!scan_context_is_closed(ctx) &&
+            scan_context_matches_path(ctx, canonical_path, 0)) {
+            g_ptr_array_add(targets, scan_context_ref(ctx));
         }
-        if (!match) continue;
+    }
+    g_mutex_unlock(&active_scan_contexts_mutex);
 
+    for (guint i = 0; i < targets->len; i++) {
+        ScanContext *ctx = g_ptr_array_index(targets, i);
         ScanIdleData *sid = g_new0(ScanIdleData, 1);
         sid->ctx = ctx;
         sid->name = g_strdup("");
@@ -746,6 +822,7 @@ void settings_scan_progress_notify(const char *path, int percent) {
         sid->progress = percent;
         g_idle_add(scan_idle_add_entry, sid);
     }
+    g_ptr_array_free(targets, TRUE);
     g_free(canonical_path);
 }
 
@@ -846,11 +923,13 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
     ctx->found_count = 0;
     ctx->total_dirs = n_dirs;
     ctx->call_reload = call_reload;
+    ctx->ref_count = 1;
 
     /* Present dialog and either integrate with the main loader or
      * perform a local scan depending on `call_reload`. */
     g_signal_connect(cancel_btn, "clicked", G_CALLBACK(on_scan_cancel_clicked), ctx);
     g_signal_connect(close_btn, "clicked", G_CALLBACK(on_scan_close_clicked), ctx);
+    g_signal_connect_swapped(dialog, "closed", G_CALLBACK(on_scan_dialog_closed), ctx);
 
     /* Present dialog and either integrate with the main loader or
      * perform a local scan depending on `call_reload`. */
@@ -861,10 +940,9 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
         ctx->n_scan_dirs = n_dirs;
 
         /* Register context so main loader can notify it */
+        g_mutex_lock(&active_scan_contexts_mutex);
         active_scan_contexts = g_list_prepend(active_scan_contexts, ctx);
-
-        /* Ensure cleanup when dialog closes */
-        g_signal_connect_swapped(dialog, "closed", G_CALLBACK(on_scan_dialog_closed), ctx);
+        g_mutex_unlock(&active_scan_contexts_mutex);
 
         adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(data->dialog));
 
@@ -894,6 +972,7 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
         args->dirs[i] = g_strdup(dirs[i]);
     args->dirs[n_dirs] = NULL;
 
+    scan_context_ref(ctx);
     GThread *t = g_thread_new("settings-scan", scan_thread_func, args);
     g_thread_unref(t);
 
@@ -1140,8 +1219,10 @@ static void on_remove_dictionary_clicked(GtkButton *btn, DictRemoveData *d) {
     /* Save id before removal because settings_remove_dictionary frees cfg */
     char *id_copy = g_strdup(d->id);
     guint before = d->data->settings->dictionaries->len;
-    DictConfig *cfg = settings_find_dictionary_by_id(d->data->settings, d->id);
-    char *dict_name = cfg ? g_strdup(cfg->name) : g_strdup("dictionary");
+    char *dict_name = settings_dup_dictionary_name_by_id(d->data->settings, d->id);
+    if (!dict_name) {
+        dict_name = g_strdup("dictionary");
+    }
     settings_remove_dictionary(d->data->settings, id_copy);
     g_hash_table_remove(d->data->group_selection_ids, id_copy);
     if (d->data->selected_dict_id &&
@@ -1183,10 +1264,7 @@ static gboolean on_dict_switch_state(GtkSwitch *sw, gboolean state, DictSwitchDa
     if (!settings_dialog_is_active(sd->data)) {
         return FALSE;
     }
-    /* Look up cfg by id — safe even after list rebuilds */
-    DictConfig *cfg = settings_find_dictionary_by_id(sd->data->settings, sd->dict_id);
-    if (cfg) {
-        cfg->enabled = state ? 1 : 0;
+    if (settings_set_dictionary_enabled_by_id(sd->data->settings, sd->dict_id, state)) {
         /* Persist immediately so restart preserves the state */
         settings_save(sd->data->settings);
         if (sd->data->soft_reload_callback) sd->data->soft_reload_callback(sd->data->user_data);

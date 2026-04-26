@@ -2198,8 +2198,7 @@ static gboolean dict_entry_enabled(DictEntry *entry) {
         // g_warning("dict_entry_enabled: entry->path is NULL for entry %p!", entry);
         return TRUE;
     }
-    DictConfig *cfg = settings_find_dictionary_by_path(app_settings, entry->path);
-    return !cfg || cfg->enabled;
+    return settings_dictionary_enabled_by_path(app_settings, entry->path, TRUE);
 }
 
 static gboolean dict_entry_in_scope(DictEntry *entry, const char *scope_id) {
@@ -4664,9 +4663,13 @@ static gboolean reload_dictionaries_from_settings_idle(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
+void force_next_dictionary_directory_rescan(void) {
+    force_directory_rescan_requested = TRUE;
+}
+
 static void request_dictionary_directory_rescan(gboolean force_directory_rescan) {
     if (force_directory_rescan) {
-        force_directory_rescan_requested = TRUE;
+        force_next_dictionary_directory_rescan();
     }
 
     if (dictionary_watch_reload_source_id != 0) {
@@ -5431,10 +5434,7 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
         // Inform settings dialog(s) of finished entry
         extern void settings_scan_notify(const char *name, const char *path, int event_type);
         settings_scan_notify(e->name ? e->name : "(Unknown)", e->path ? e->path : "", DICT_LOADER_EVENT_FINISHED);
-
-
-        DictConfig *cfg = app_settings ? settings_find_dictionary_by_path(app_settings, e->path) : NULL;
-        if (cfg && !cfg->enabled) {
+        if (app_settings && !settings_dictionary_enabled_by_path(app_settings, e->path, TRUE)) {
             dict_entry_unref(e);
             g_free(ld->status_text);
             g_free(ld);
