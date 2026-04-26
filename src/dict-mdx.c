@@ -21,6 +21,7 @@
 #include <utime.h>
 #include <errno.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
+#include "settings.h"
 
 /* Cache helpers for persistent dictionary storage */
 
@@ -1149,8 +1150,15 @@ rebuild_cache:
     unsigned char *kbi_raw = malloc(kbi_comp);
     fread(kbi_raw, 1, kbi_comp, fh);
 
+    /* --- BUFFERED WRITING FOR CACHE --- */
+    char *write_buf = malloc(1024 * 1024);
+    setvbuf(cache, write_buf, _IOFBF, 1024 * 1024);
+
     TreeEntry *tree_entries = calloc(num_entries, sizeof(TreeEntry));
     size_t valid_count = 0;
+    size_t valid_count_processed = 0;
+    long headword_section_end = 0;
+    (void)valid_count_processed; /* will be used in record loop */
 
     size_t kbi_dlen = 0;
     unsigned char *kbi_data = NULL;
@@ -1263,11 +1271,10 @@ rebuild_cache:
             fseek(fh, next_kb, SEEK_SET);
         }
         free(kbi_data);
-    } else {
-
-        fprintf(stderr, "[MDX] Failed to decode key block info for %s (v%d, kbi_comp=%" G_GUINT64_FORMAT ", kbi_decomp=%" G_GUINT64_FORMAT ")\n",
-                path, is_v2 ? 2 : 1, kbi_comp, kbi_decomp);
-    }
+    } 
+    
+    headword_section_end = ftell(cache);
+    settings_scan_progress_notify(path, 40);
 
     fseek(fh, 4 + header_text_size + 4 + kbh_size + (is_v2?4:0) + kbi_comp + kb_data_size, SEEK_SET);
 
@@ -1280,131 +1287,117 @@ rebuild_cache:
 
     typedef struct { uint64_t comp, decomp; } RB;
     RB *rbs = calloc(nrb, sizeof(RB));
-    uint64_t total_decomp = 0;
     for (uint64_t i = 0; i < nrb; i++) {
         unsigned char tmp[16];
-        fread(tmp, 1, num_size * 2, fh);
+        if (fread(tmp, 1, num_size * 2, fh) != (size_t)(num_size * 2)) break;
         const unsigned char *ppb = tmp;
         rbs[i].comp = read_num(&ppb, num_size);
         rbs[i].decomp = read_num(&ppb, num_size);
-        total_decomp += rbs[i].decomp;
     }
 
-    unsigned char *dict_rec_data = malloc(total_decomp);
-    uint64_t co = 0;
-    for (uint64_t i = 0; i < nrb; i++) {
-        unsigned char *comp = malloc(rbs[i].comp);
-        if (fread(comp, 1, rbs[i].comp, fh) == rbs[i].comp) {
+    uint64_t current_decomp_offset = 0;
+    for (uint64_t j = 0; j < nrb; j++) {
+        if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) break;
+        
+        unsigned char *comp = malloc(rbs[j].comp);
+        if (fread(comp, 1, rbs[j].comp, fh) == rbs[j].comp) {
             size_t dlen = 0;
-            unsigned char *data = mdx_block_decompress(comp, rbs[i].comp, rbs[i].decomp, &dlen);
-            if (data) { memcpy(dict_rec_data + co, data, dlen); co += dlen; free(data); }
-            else {
-                fprintf(stderr, "[MDX] Failed to decode record block %" G_GUINT64_FORMAT " for %s (comp=%" G_GUINT64_FORMAT ", decomp=%" G_GUINT64_FORMAT ")\n",
-                        i, path, rbs[i].comp, rbs[i].decomp);
+            unsigned char *data = mdx_block_decompress(comp, rbs[j].comp, rbs[j].decomp, &dlen);
+            if (data) {
+                /* Map records to tree entries */
+                while (valid_count_processed < valid_count && 
+                       (uint64_t)tree_entries[valid_count_processed].d_off < current_decomp_offset + dlen) {
+                    
+                    size_t entry_idx = valid_count_processed;
+                    uint64_t rel_off = (uint64_t)tree_entries[entry_idx].d_off - current_decomp_offset;
+                    
+                    /* Find next entry to determine record length */
+                    uint64_t next_id = (entry_idx + 1 < valid_count) ? (uint64_t)tree_entries[entry_idx + 1].d_off : (uint64_t)-1;
+                    
+                    uint64_t rec_len;
+                    if (next_id != (uint64_t)-1 && next_id < current_decomp_offset + dlen) {
+                        rec_len = next_id - (uint64_t)tree_entries[entry_idx].d_off;
+                    } else {
+                        /* This entry spans across blocks or is the very last one in MDX */
+                        /* Actually MDX records are block-aligned or at least we can find the end */
+                        /* For simplicity, we assume records don't span blocks (common in MDX) */
+                        rec_len = dlen - rel_off;
+                    }
+
+                    const unsigned char *rec_ptr = data + rel_off;
+                    
+                    /* Extract internal icon */
+                    if ((uint64_t)tree_entries[entry_idx].d_off == internal_icon_id) {
+                        const char *res_dir = mdx_prepare_resource_dir(path, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected, NULL);
+                        if (res_dir) {
+                            char *icon_filename = g_strdup_printf("mdx_icon.%s", internal_icon_ext);
+                            char *icon_path = g_build_filename(res_dir, icon_filename, NULL);
+                            g_file_set_contents(icon_path, (const char *)rec_ptr, (gssize)rec_len, NULL);
+                            g_free(icon_filename); g_free(icon_path);
+                        }
+                    }
+
+                    long def_off = ftell(cache);
+                    if (encoding_is_utf16) {
+                        if (rec_len >= 2 && rec_ptr[rec_len-1] == 0 && rec_ptr[rec_len-2] == 0) rec_len -= 2;
+                        char *utf8 = g_convert((const char *)rec_ptr, rec_len, "UTF-8", "UTF-16LE", NULL, NULL, NULL);
+                        if (utf8) {
+                            size_t ulen = strlen(utf8);
+                            fwrite(utf8, 1, ulen, cache);
+                            tree_entries[entry_idx].d_len = ulen;
+                            g_free(utf8);
+                        } else {
+                            fwrite(rec_ptr, 1, rec_len, cache);
+                            tree_entries[entry_idx].d_len = rec_len;
+                        }
+                    } else {
+                        if (rec_len > 0 && rec_ptr[rec_len-1] == 0) rec_len--;
+                        if (dict_encoding) {
+                            char *utf8 = g_convert((const char*)rec_ptr, rec_len, "UTF-8", dict_encoding, NULL, NULL, NULL);
+                            if (utf8) {
+                                size_t ulen = strlen(utf8);
+                                fwrite(utf8, 1, ulen, cache);
+                                tree_entries[entry_idx].d_len = ulen;
+                                g_free(utf8);
+                            } else {
+                                fwrite(rec_ptr, 1, rec_len, cache);
+                                tree_entries[entry_idx].d_len = rec_len;
+                            }
+                        } else {
+                            fwrite(rec_ptr, 1, rec_len, cache);
+                            tree_entries[entry_idx].d_len = rec_len;
+                        }
+                    }
+                    fwrite("\n", 1, 1, cache);
+                    tree_entries[entry_idx].d_off = (int64_t)def_off;
+                    valid_count_processed++;
+                }
+                current_decomp_offset += dlen;
+                free(data);
             }
         }
         free(comp);
+        if ((j % 10) == 0) settings_scan_progress_notify(path, 40 + (int)(40 * j / nrb));
     }
     free(rbs);
 
-    for (size_t i = 0; i < valid_count; i++) {
-        uint64_t start = (uint64_t)tree_entries[i].d_off;
-        uint64_t end = (i + 1 < valid_count) ? (uint64_t)tree_entries[i + 1].d_off : total_decomp;
-
-        if (end > start && end <= total_decomp) {
-            size_t rec_len = (size_t)(end - start);
-            const unsigned char *rec_ptr = dict_rec_data + start;
-
-            /* Extract internal icon if this is the matching record */
-            if (start == internal_icon_id) {
-                const char *res_dir = mdx_prepare_resource_dir(path, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected, NULL);
-                if (res_dir) {
-                    char *icon_filename = g_strdup_printf("mdx_icon.%s", internal_icon_ext);
-                    char *icon_path = g_build_filename(res_dir, icon_filename, NULL);
-                    GError *err = NULL;
-                    if (g_file_set_contents(icon_path, (const char *)rec_ptr, (gssize)rec_len, &err)) {
-                        fprintf(stderr, "[MDX] Extracted internal icon to: %s\n", icon_path);
-                    } else {
-                        fprintf(stderr, "[MDX] Failed to extract internal icon to %s: %s\n", icon_path, err ? err->message : "unknown error");
-                        if (err) g_error_free(err);
-                    }
-                    g_free(icon_filename);
-                    g_free(icon_path);
-                }
+    /* Sort entries for binary search using mmap for speed */
+    fflush(cache);
+    settings_scan_progress_notify(path, 85);
+    int sort_fd = open(cache_path, O_RDONLY);
+    if (sort_fd >= 0) {
+        void *sort_mmap = mmap(NULL, (size_t)ftell(cache), PROT_READ, MAP_PRIVATE, sort_fd, 0);
+        if (sort_mmap != MAP_FAILED) {
+            /* Inform OS about sequential access for headwords */
+            if (headword_section_end > 0) {
+                madvise(sort_mmap, headword_section_end, MADV_WILLNEED);
             }
-
-            long def_off = ftell(cache);
-
-            if (encoding_is_utf16) {
-                /* Strip UTF-16 null terminator if present */
-                if (rec_len >= 2 && rec_ptr[rec_len - 1] == 0 && rec_ptr[rec_len - 2] == 0) {
-                    rec_len -= 2;
-                }
-                
-                GError *err = NULL;
-                char *utf8 = g_convert((const char *)rec_ptr, rec_len, "UTF-8", "UTF-16LE", NULL, NULL, &err);
-                if (utf8) {
-                    size_t ulen = strlen(utf8);
-                    fwrite(utf8, 1, ulen, cache);
-                    tree_entries[i].d_len = (uint64_t)ulen;
-                    g_free(utf8);
-                } else {
-                    if (err) g_error_free(err);
-                    /* fallback to raw write (best effort) */
-                    fwrite(rec_ptr, 1, rec_len, cache);
-                    tree_entries[i].d_len = (uint64_t)rec_len;
-                }
-            } else {
-                /* Strip UTF-8 null terminator if present */
-                if (rec_len > 0 && rec_ptr[rec_len - 1] == 0) {
-                    rec_len--;
-                }
-                
-                if (dict_encoding && rec_len > 0) {
-                    GError *err = NULL;
-                    char *utf8 = g_convert((const char*)rec_ptr, rec_len, "UTF-8", dict_encoding, NULL, NULL, &err);
-                    if (utf8) {
-                        size_t ulen = strlen(utf8);
-                        fwrite(utf8, 1, ulen, cache);
-                        tree_entries[i].d_len = (uint64_t)ulen;
-                        g_free(utf8);
-                    } else {
-                        if (err) g_error_free(err);
-                        fwrite(rec_ptr, 1, rec_len, cache);
-                        tree_entries[i].d_len = (uint64_t)rec_len;
-                    }
-                } else {
-                    fwrite(rec_ptr, 1, rec_len, cache);
-                    tree_entries[i].d_len = (uint64_t)rec_len;
-                }
-            }
-
-            fwrite("\n", 1, 1, cache);
-            tree_entries[i].d_off = (int64_t)def_off;
-        } else {
-            tree_entries[i].d_len = 0;
+            flat_index_sort_entries(tree_entries, valid_count, sort_mmap, (size_t)ftell(cache));
+            munmap(sort_mmap, (size_t)ftell(cache));
         }
+        close(sort_fd);
     }
-    free(dict_rec_data);
-
-    /* Sort entries for binary search, then write index array at end of file */
-    flat_index_sort_entries(tree_entries, valid_count, NULL, 0);
-    /* The entries reference headwords in the cache file, sort by cache offset headwords */
-    {
-        /* Read back the cache data for sorting (we need to read the headwords
-         * we just wrote). Flush and reopen for reading. */
-        fflush(cache);
-        long cache_size_now = ftell(cache);
-        FILE *sort_f = fopen(cache_path, "rb");
-        if (sort_f) {
-            char *sort_buf = malloc(cache_size_now);
-            if (sort_buf && fread(sort_buf, 1, cache_size_now, sort_f) == (size_t)cache_size_now) {
-                flat_index_sort_entries(tree_entries, valid_count, sort_buf, cache_size_now);
-            }
-            free(sort_buf);
-            fclose(sort_f);
-        }
-    }
+    settings_scan_progress_notify(path, 95);
     fwrite(tree_entries, sizeof(TreeEntry), valid_count, cache);
 
     fseek(cache, 0, SEEK_SET);
@@ -1437,6 +1430,9 @@ rebuild_cache:
 
     dict->resource_dir = mdx_prepare_resource_dir(path, is_v2, num_size, encoding_is_utf16, encrypted, cancel_flag, expected, &dict->resource_reader);
     mdx_detect_icon(dict, path);
+    
+    settings_scan_progress_notify(path, 100);
+    free(write_buf);
 
     return dict;
 }

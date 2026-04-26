@@ -1936,16 +1936,19 @@ static guint seed_search_sidebar_fast_rows(SidebarSearchState *state) {
 
     GPtrArray *labels = g_ptr_array_new();
     GPtrArray *payloads = g_ptr_array_new();
-    const guint max_seed_rows = 10000;
+    const guint max_seed_rows = 512;
+    gint64 deadline_us = g_get_monotonic_time() + 5000; /* 5ms UI thread budget */
     guint added = 0;
 
     for (DictEntry *entry = all_dicts; entry && added < max_seed_rows; entry = entry->next) {
+        if (g_get_monotonic_time() > deadline_us) break;
         if (!entry->dict || !entry->dict->index || !dict_entry_in_active_scope(entry)) {
             continue;
         }
 
         size_t pos = flat_index_search_prefix(entry->dict->index, state->query);
         while (pos != (size_t)-1 && added < max_seed_rows) {
+            if ((pos & 63) == 0 && g_get_monotonic_time() > deadline_us) break;
             const FlatTreeEntry *node = flat_index_get(entry->dict->index, pos);
             if (!node) break;
 

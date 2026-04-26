@@ -78,3 +78,4 @@ gboolean settings_path_is_in_directory_list(AppSettings *settings, const char *p
 gboolean settings_is_dictionary_ignored(AppSettings *settings, const char *path);
 void settings_set_dictionary_ignored(AppSettings *settings, const char *path, gboolean ignored);
 char* settings_resolve_dictionary_name(const char *path);
+void settings_scan_progress_notify(const char *path, int percent);
