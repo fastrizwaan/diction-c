@@ -5167,6 +5167,18 @@ static void collect_dictionary_candidate_paths_with_find(const char *dirpath,
     g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.bgl"));
     g_ptr_array_add(argv_array, g_strdup("-o"));
     g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.slob"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.xdxf"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.xdxf.dz"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.tar.bz2"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.tar.gz"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.tar.xz"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.tgz"));
     g_ptr_array_add(argv_array, g_strdup(")"));
     g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/node_modules/*"));
     g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/.git/*"));

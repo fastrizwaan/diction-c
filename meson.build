@@ -13,6 +13,7 @@ if not webkit_dep.found()
   webkit_dep = dependency('webkit2gtk-4.1')
 endif
 zlib_dep = dependency('zlib')
+xml_dep = dependency('libxml-2.0')
 json_dep = dependency('json-glib-1.0')
 archive_dep = dependency('libarchive')
 zstd_dep = dependency('libzstd')
@@ -32,6 +33,7 @@ srcs = [
   'src/dict-slob.c',
   'src/dict-bgl.c',
   'src/dict-ifo.c',
+  'src/dict-xdxf.c',
   'src/dict-render.c',
   'src/ripemd128.c',
   'src/settings.c',
@@ -44,7 +46,7 @@ srcs = [
 ]
 
 executable('diction', srcs,
-  dependencies: [ gtk_dep, adw_dep, webkit_dep, zlib_dep, json_dep, archive_dep, zstd_dep, lzma_dep, bz2_dep, lzo_dep ],
+  dependencies: [ gtk_dep, adw_dep, webkit_dep, zlib_dep, json_dep, archive_dep, zstd_dep, lzma_dep, bz2_dep, lzo_dep, xml_dep ],
   install: true,
 )
 

@@ -11,6 +11,7 @@ typedef enum {
     DICT_FORMAT_MDX,
     DICT_FORMAT_BGL,
     DICT_FORMAT_SLOB,
+    DICT_FORMAT_XDXF,
     DICT_FORMAT_UNKNOWN
 } DictFormat;
 

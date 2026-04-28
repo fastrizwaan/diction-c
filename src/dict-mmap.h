@@ -33,4 +33,5 @@ DictMmap* parse_mdx_file(const char *path, volatile gint *cancel_flag, gint expe
 DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expected);
 DictMmap* parse_stardict(const char *path, volatile gint *cancel_flag, gint expected);
 DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint expected);
+DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint expected);
 void dict_mmap_close(DictMmap *dict);

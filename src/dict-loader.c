@@ -9,6 +9,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <gdk-pixbuf/gdk-pixbuf.h>
+#include <archive.h>
+#include <archive_entry.h>
 
 /* ── helpers ─────────────────────────────────────────────── */
 
@@ -74,6 +76,39 @@ static char *dsl_fallback_variant(const char *preferred_path) {
 
 /* ── format detection ────────────────────────────────────── */
 
+static int is_xdxf_archive(const char *path, char *out_xdxf, size_t out_sz) {
+    struct archive *a = archive_read_new();
+    struct archive_entry *entry;
+    int found = 0;
+
+    archive_read_support_format_tar(a);
+    archive_read_support_filter_bzip2(a);
+    archive_read_support_filter_gzip(a);
+    archive_read_support_filter_xz(a);
+
+    if (archive_read_open_filename(a, path, 10240) != ARCHIVE_OK) {
+        archive_read_free(a);
+        return 0;
+    }
+
+    while (archive_read_next_header(a, &entry) == ARCHIVE_OK) {
+        const char *name = archive_entry_pathname(entry);
+        if (name && (ends_with_ci(name, ".xdxf") || ends_with_ci(name, ".xdxf.dz"))) {
+            found = 1;
+            if (out_xdxf && out_sz > 0) {
+                strncpy(out_xdxf, name, out_sz - 1);
+                out_xdxf[out_sz - 1] = '\0';
+            }
+            break;
+        }
+        archive_read_data_skip(a);
+    }
+
+    archive_read_close(a);
+    archive_read_free(a);
+    return found;
+}
+
 DictFormat dict_detect_format(const char *path) {
     if (ends_with_ci(path, ".dsl.dz") || ends_with_ci(path, ".dsl"))
         return DICT_FORMAT_DSL;
@@ -85,6 +120,12 @@ DictFormat dict_detect_format(const char *path) {
         return DICT_FORMAT_BGL;
     if (ends_with_ci(path, ".slob"))
         return DICT_FORMAT_SLOB;
+    if (ends_with_ci(path, ".xdxf") || ends_with_ci(path, ".xdxf.dz"))
+        return DICT_FORMAT_XDXF;
+    if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz")) {
+        if (is_xdxf_archive(path, NULL, 0))
+            return DICT_FORMAT_XDXF;
+    }
     return DICT_FORMAT_UNKNOWN;
 }
 
@@ -116,6 +157,9 @@ DictMmap* dict_load_any(const char *path, DictFormat fmt, volatile gint *cancel_
             break;
         case DICT_FORMAT_SLOB:
             dict = parse_slob_file(path, cancel_flag, expected_generation);
+            break;
+        case DICT_FORMAT_XDXF:
+            dict = parse_xdxf_file(path, cancel_flag, expected_generation);
             break;
 
         default:
@@ -311,7 +355,9 @@ static void discover_with_find(const char *dirpath, GList **candidates_out, vola
     char *cmd = g_strdup_printf(
         "find %s -maxdepth 5 -type f \\( "
         "-iname \"*.mdx\" -o -iname \"*.dsl\" -o -iname \"*.dsl.dz\" -o "
-        "-iname \"*.ifo\" -o -iname \"*.bgl\" -o -iname \"*.slob\" \\) "
+        "-iname \"*.ifo\" -o -iname \"*.bgl\" -o -iname \"*.slob\" -o "
+        "-iname \"*.xdxf\" -o -iname \"*.xdxf.dz\" -o "
+        "-iname \"*.tar.bz2\" -o -iname \"*.tar.gz\" -o -iname \"*.tar.xz\" -o -iname \"*.tgz\" \\) "
         "-not -path \"*/node_modules/*\" -not -path \"*/.git/*\" "
         "-not -path \"*/build/*\" -not -path \"*/dist/*\" "
         "-not -path \"*/__pycache__/*\" 2>/dev/null",
