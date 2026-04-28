@@ -123,6 +123,14 @@ DictFormat dict_detect_format(const char *path) {
     if (ends_with_ci(path, ".xdxf") || ends_with_ci(path, ".xdxf.dz"))
         return DICT_FORMAT_XDXF;
     if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz")) {
+        /* Optimization: Check if we already have a cache for this archive */
+        char *cache_path = dict_cache_path_for(path);
+        if (dict_cache_is_valid(cache_path, path)) {
+            g_free(cache_path);
+            return DICT_FORMAT_XDXF;
+        }
+        g_free(cache_path);
+
         if (is_xdxf_archive(path, NULL, 0))
             return DICT_FORMAT_XDXF;
     }
@@ -486,6 +494,7 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
     candidates = g_list_reverse(candidates);
 
     /* Phase 1: Signal DISCOVERED to UI immediately */
+    int discovery_count = 0;
     for (GList *l = candidates; l; l = l->next) {
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) break;
         DictCandidate *c = l->data;
@@ -494,19 +503,26 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
         discovery_entry.path = c->path;
         discovery_entry.format = c->format;
         callback(&discovery_entry, DICT_LOADER_EVENT_DISCOVERED, user_data);
+        fprintf(stderr, "[SCANNER] Discovered %s\n", c->path);
+        
+        /* Throttle discovery notifications to avoid flooding the main loop if hundreds of files are found */
+        if ((discovery_count++ % 20) == 0) g_usleep(20000); /* 20ms pause every 20 files */
     }
 
     /* Phase 2: Throttled loading and indexing */
+    fprintf(stderr, "[SCANNER] Phase 2: Starting to load %d discovered files\n", discovery_count);
     for (GList *l = candidates; l; l = l->next) {
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) break;
         DictCandidate *c = l->data;
 
         callback(NULL, DICT_LOADER_EVENT_STARTED, user_data);
 
-        /* Give the system a tiny breath before each heavy load */
-        g_usleep(100000); /* 100ms throttle */
+        /* Give the system a breath before each heavy load to maintain UI responsiveness */
+        g_usleep(200000); /* 200ms throttle */
 
+        fprintf(stderr, "[SCANNER] Loading %s...\n", c->path);
         DictMmap *loaded = dict_load_any(c->path, c->format, cancel_flag, expected_generation);
+        fprintf(stderr, "[SCANNER] Finished %s -> %s\n", c->path, loaded ? "SUCCESS" : "FAILED");
         if (!loaded) {
             char *fallback = dsl_fallback_variant(c->path);
             if (fallback) {

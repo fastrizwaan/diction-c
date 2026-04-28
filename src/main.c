@@ -4113,12 +4113,28 @@ static void on_search_changed(GtkEditable *entry, gpointer user_data) {
     schedule_execute_search();
 }
 
-static void on_random_clicked(GtkButton *btn, gpointer user_data) {
-    (void)btn; (void)user_data;
-    if (!all_dicts) return;
+typedef struct {
+    char *word;
+    char *clean_hw;
+} RandomWordIdleData;
 
+static gboolean on_random_word_found_idle(gpointer user_data) {
+    RandomWordIdleData *id = user_data;
+    if (id->clean_hw) {
+        gtk_editable_set_text(GTK_EDITABLE(search_entry), id->clean_hw);
+        if (search_button_label) {
+            gtk_label_set_text(GTK_LABEL(search_button_label), id->clean_hw);
+        }
+    }
+    g_free(id->word);
+    g_free(id->clean_hw);
+    g_free(id);
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer random_word_thread_worker(gpointer data) {
+    (void)data;
     g_mutex_lock(&dict_loader_mutex);
-    // Count dicts in active scope
     int count = 0;
     for (DictEntry *e = all_dicts; e; e = e->next) {
         if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0 && dict_entry_in_active_scope(e)) {
@@ -4126,66 +4142,68 @@ static void on_random_clicked(GtkButton *btn, gpointer user_data) {
         }
     }
     
-    DictEntry *e = NULL;
+    DictEntry *target_e = NULL;
     if (count > 0) {
-        // Pick random dict
-        int target = rand() % count;
-        e = all_dicts;
-        int cur = 0;
-        while (e) {
-            if (e->dict && e->dict->index && flat_index_count(e->dict->index) > 0 && dict_entry_in_active_scope(e)) {
-                if (cur == target) break;
-                cur++;
+        int target_idx = rand() % count;
+        DictEntry *curr = all_dicts;
+        int cur_count = 0;
+        while (curr) {
+            if (curr->dict && curr->dict->index && flat_index_count(curr->dict->index) > 0 && dict_entry_in_active_scope(curr)) {
+                if (cur_count == target_idx) {
+                    target_e = curr;
+                    dict_entry_ref(target_e);
+                    break;
+                }
+                cur_count++;
             }
-            e = e->next;
+            curr = curr->next;
         }
     }
-    
-    if (e) dict_entry_ref(e);
     g_mutex_unlock(&dict_loader_mutex);
 
-    if (e && e->dict && flat_index_count(e->dict->index) > 0) {
+    if (target_e) {
         int attempts = 0;
         const FlatTreeEntry *node = NULL;
+        char *found_word = NULL;
         char *clean_hw = NULL;
-        char *tmp_hw = NULL;
 
-        while (attempts < 10) {
-            node = flat_index_random(e->dict->index);
+        while (attempts < 15) {
+            node = flat_index_random(target_e->dict->index);
             if (!node) break;
-            const char *word = e->dict->data + node->h_off;
-            size_t len = node->h_len;
-            tmp_hw = g_strndup(word, len);
-            clean_hw = normalize_headword_for_search(tmp_hw, TRUE);
-            
+
+            /* This read might block on disk I/O, which is why we are in a background thread */
+            const char *raw_data = target_e->dict->data + node->h_off;
+            found_word = g_strndup(raw_data, node->h_len);
+            clean_hw = normalize_headword_for_render(found_word, node->h_len, FALSE);
+
             if (clean_hw && *clean_hw && !text_has_replacement_char(clean_hw)) {
                 break;
             }
-            
-            g_free(tmp_hw);
+
+            g_free(found_word);
             g_free(clean_hw);
-            tmp_hw = NULL;
+            found_word = NULL;
             clean_hw = NULL;
             attempts++;
         }
 
-        if (node && tmp_hw) {
-            fprintf(stderr, "[Random word]: '%s'\n", clean_hw ? clean_hw : tmp_hw);
-            
-            char *rendered_hw = normalize_headword_for_render(tmp_hw, tmp_hw ? strlen(tmp_hw) : 0, FALSE);
-            gtk_editable_set_text(GTK_EDITABLE(search_entry), rendered_hw);
-            if (search_button_label) {
-                gtk_label_set_text(GTK_LABEL(search_button_label), rendered_hw);
-            }
-            g_free(rendered_hw);
-
-            g_free(tmp_hw);
-            if (clean_hw) g_free(clean_hw);
-            // Search will be triggered by "search-changed" signal, but we want it instantly
-            execute_search_now();
+        if (clean_hw) {
+            RandomWordIdleData *id = g_new0(RandomWordIdleData, 1);
+            id->word = found_word;
+            id->clean_hw = clean_hw;
+            g_idle_add(on_random_word_found_idle, id);
         }
-        dict_entry_unref(e);
+        dict_entry_unref(target_e);
     }
+
+    return NULL;
+}
+
+static void on_random_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn; (void)user_data;
+    if (!all_dicts) return;
+    /* Launch background thread to avoid UI freeze during I/O */
+    g_thread_unref(g_thread_new("random-word-picker", random_word_thread_worker, NULL));
 }
 
 static void maybe_show_startup_random_word(void) {
@@ -5465,7 +5483,7 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
 
         // Inform settings dialog(s) of finished entry
         extern void settings_scan_notify(const char *name, const char *path, int event_type);
-        settings_scan_notify(e->name ? e->name : "(Unknown)", e->path ? e->path : "", DICT_LOADER_EVENT_FINISHED);
+        /* settings_scan_notify(e->name ? e->name : "(Unknown)", e->path ? e->path : "", DICT_LOADER_EVENT_FINISHED); */ // Consolidate into one place later
         if (app_settings && !settings_dictionary_enabled_by_path(app_settings, e->path, TRUE)) {
             dict_entry_unref(e);
             g_free(ld->status_text);
@@ -5525,7 +5543,7 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
                 if (app_settings) {
                     if (e->dict_id &&
                         settings_upsert_guessed_group(app_settings, guessed, e->dict_id)) {
-                        populate_groups_sidebar();
+                        // populate_groups_sidebar(); // Removed from here to coalesce
                     }
                 }
             }
@@ -5535,7 +5553,7 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
             g_free(metadata_text);
             
             // Re-populate dict sidebar as well to show new group info if we decide to add it to subtitles
-            populate_dict_sidebar();
+            // populate_dict_sidebar(); // Removed from here to coalesce
         }
 
         // Replace in global list under lock
@@ -5581,11 +5599,16 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
             set_active_entry(all_dicts);
         }
 
-        if (!startup_loading_active) {
+        /* Throttled UI update: only rebuild sidebar every 50 files to avoid UI hammering */
+        if (!startup_loading_active && (ld->completed % 50 == 0)) {
             populate_dict_sidebar();
         }
 
-        maybe_show_startup_random_word();
+        // maybe_show_startup_random_word(); // Removed from here to coalesce
+
+        /* Notify active scan dialogs that this dictionary is finished loading */
+        extern void settings_scan_notify(const char *name, const char *path, int event_type);
+        settings_scan_notify(e->name, e->path, DICT_LOADER_EVENT_FINISHED);
     }
 
     if (ld->kind == LOAD_IDLE_DONE) {
@@ -5614,8 +5637,13 @@ static void load_one_dict_worker(gpointer data, gpointer user_data) {
         return;
     }
 
+    /* Give the system a small gap between sequential dictionary loads to avoid I/O spikes */
+    g_usleep(150000); /* 150ms throttle */
+
     DictFormat fmt = dict_detect_format(la->path);
+    fprintf(stderr, "[LOADER] Starting %s (fmt=%d)\n", la->path, fmt);
     DictMmap *dict = dict_load_any(la->path, fmt, &loader_generation, la->generation);
+    fprintf(stderr, "[LOADER] Finished %s -> %s\n", la->path, dict ? "SUCCESS" : "FAILED");
 
     gint done = g_atomic_int_add(la->completed, 1) + 1;
 
@@ -5692,11 +5720,8 @@ static gpointer dict_load_thread(gpointer user_data) {
     if (total_candidates > 0) {
         volatile gint completed_count = 0;
 
-        /* Create thread pool with num_processors threads */
-        guint n_workers = g_get_num_processors();
-        if (n_workers < 2) n_workers = 2;
-        if (n_workers > 8) n_workers = 8;
-
+        /* Ensure strictly sequential loading to maintain UI responsiveness and reduce I/O pressure */
+        guint n_workers = 1;
         GError *pool_error = NULL;
         GThreadPool *pool = g_thread_pool_new(load_one_dict_worker, NULL, (gint)n_workers, FALSE, &pool_error);
 

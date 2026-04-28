@@ -15,6 +15,7 @@
 #include <glib.h>
 #include <errno.h>
 #include <iconv.h>
+#include "settings.h"
 
 #include "dict-cache.h"
 
@@ -172,7 +173,7 @@ static char *format_bgl_definition(const unsigned char *def_data, size_t def_len
 
 static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out_file,
                                    TreeEntry **out_entries, char **out_name,
-                                   volatile gint *cancel_flag, gint expected) {
+                                   const char *path, volatile gint *cancel_flag, gint expected) {
     const unsigned char *p = (const unsigned char *)data;
     const unsigned char *end = p + data_size;
     int word_count = 0;
@@ -180,6 +181,10 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
     size_t entry_cap = 4096;
     TreeEntry *entries = calloc(entry_cap, sizeof(TreeEntry));
     char *dict_name = NULL;
+
+    size_t last_notified_pos = 0;
+    size_t notify_interval = data_size / 20;
+    if (notify_interval < 4096) notify_interval = 4096;
     
     const char *default_charset = "UTF-8"; // Usually missing metadata means the file was natively compiled as UTF-8
     const char *source_charset_override = NULL;
@@ -242,6 +247,15 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
 
     while (p < end) {
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) break;
+
+        size_t current_pos = (size_t)(p - (const unsigned char *)data);
+        if (current_pos - last_notified_pos > notify_interval) {
+            int pct = (int)(current_pos * 100 / data_size);
+            if (pct > 100) pct = 100;
+            settings_scan_progress_notify(path, pct);
+            last_notified_pos = current_pos;
+        }
+
         if (p + 1 > end) break;
 
         unsigned int first_byte = p[0];
@@ -385,6 +399,7 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
     }
     
     printf("[BGL] Transcoded %d entries into cache\n", word_count);
+    settings_scan_progress_notify(path, 100);
     return (size_t)word_count;
 }
 
@@ -475,7 +490,19 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
 
         unsigned char buf[65536];
         int n;
+        int64_t total_transferred = 0;
+        int64_t total_src_size = 0;
+        {
+            struct stat src_st;
+            if (stat(path, &src_st) == 0) total_src_size = src_st.st_size;
+        }
+
         while ((n = gzread(gz, buf, sizeof(buf))) > 0) {
+            total_transferred += n;
+            if (total_src_size > 0 && (total_transferred % (1024 * 1024)) == 0) {
+                int pct = (int)(total_transferred * 30 / total_src_size); /* 30% for extraction */
+                settings_scan_progress_notify(path, pct);
+            }
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
                 gzclose(gz); fclose(tf); unlink(tmp_raw); g_free(cache_path); return NULL;
             }
@@ -495,7 +522,8 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
 
         TreeEntry *entries = NULL;
         char *dict_name = NULL;
-        size_t entry_count = transcode_bgl_blocks(raw_data, raw_st.st_size, cache_file, &entries, &dict_name, cancel_flag, expected);
+        settings_scan_progress_notify(path, 35);
+        size_t entry_count = transcode_bgl_blocks(raw_data, raw_st.st_size, cache_file, &entries, &dict_name, path, cancel_flag, expected);
 
         munmap((void*)raw_data, raw_st.st_size);
         close(raw_fd);

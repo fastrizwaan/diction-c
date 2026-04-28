@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include "settings.h"
 
 #define SLOB_MAGIC "\x21\x2d\x31\x53\x4c\x4f\x42\x1f"
 
@@ -220,6 +221,12 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
 
         uint64_t refs_block_end = hdr.refs_offset + (uint64_t)hdr.refs_count * 8;
         for (uint32_t i = 0; i < hdr.refs_count; i++) {
+            if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
+                g_string_free(hw_data, TRUE); g_free(temp_refs); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL;
+            }
+            if (i % 500 == 0) {
+                settings_scan_progress_notify(path, (int)(i * 20 / hdr.refs_count)); /* 20% for ref scan */
+            }
             uint64_t ref_ptr = read_u64be((unsigned char*)map + hdr.refs_offset + i * 8);
             const unsigned char *re_p = (unsigned char*)map + refs_block_end + ref_ptr;
             char *key = read_slob_text(&re_p, end);
@@ -252,6 +259,13 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
 
         const unsigned char *items_offsets_p = (unsigned char*)map + hdr.items_offset;
         for (uint32_t i = 0; i < hdr.items_count; i++) {
+            if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
+                g_free(item_to_refs); g_free(bin_cache_offsets); g_free(bin_cache_lens); g_free(temp_refs); g_string_free(hw_data, TRUE);
+                fclose(cf); unlink(cache_path); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL;
+            }
+            if (i % 100 == 0) {
+                settings_scan_progress_notify(path, 20 + (int)(i * 70 / hdr.items_count)); /* 70% for item decompression */
+            }
             if (!item_to_refs[i]) continue;
             uint64_t item_ptr = read_u64be(items_offsets_p + i * 8);
             const unsigned char *it_p = (unsigned char*)map + hdr.items_offset + hdr.items_count * 8 + item_ptr;
@@ -301,6 +315,7 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
         fseek(cf, 0, SEEK_SET);
         fwrite(&count_be, 8, 1, cf);
         fclose(cf);
+        settings_scan_progress_notify(path, 95);
         dict_cache_sync_mtime(cache_path, &path, 1);
         g_free(final_entries); g_string_free(hw_data, TRUE);
     }
@@ -322,6 +337,7 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
     dm->source_dir = g_path_get_dirname(path);
     dm->index = flat_index_open(dm->data, dm->size);
 
+    settings_scan_progress_notify(path, 100);
     g_free(cache_path);
     return dm;
 }

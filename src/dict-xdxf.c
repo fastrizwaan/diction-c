@@ -15,6 +15,7 @@
 #include <libxml/xmlreader.h>
 #include <zlib.h>
 #include <errno.h>
+#include "settings.h"
 
 static int ends_with_ci(const char *s, const char *suffix) {
     size_t sl = strlen(s), xl = strlen(suffix);
@@ -23,6 +24,7 @@ static int ends_with_ci(const char *s, const char *suffix) {
 }
 
 static char* extract_xdxf_from_archive(const char *archive_path, const char *target_dir) {
+    settings_scan_progress_notify(archive_path, 5);
     struct archive *a = archive_read_new();
     struct archive_entry *entry;
     char *first_xdxf_path = NULL;
@@ -67,18 +69,21 @@ static char* extract_xdxf_from_archive(const char *archive_path, const char *tar
         if (fd >= 0) {
             archive_read_data_into_fd(a, fd);
             close(fd);
+            settings_scan_progress_notify(archive_path, 15);
         }
         g_free(extracted_path);
     }
 
     archive_read_close(a);
     archive_read_free(a);
+    settings_scan_progress_notify(archive_path, 30);
     return first_xdxf_path;
 }
 
 static char* decompress_xdxf_dz(const char *dz_path, const char *temp_dir) {
     gzFile gz = gzopen(dz_path, "rb");
     if (!gz) return NULL;
+    settings_scan_progress_notify(dz_path, 5);
 
     const char *base = strrchr(dz_path, '/');
     if (base) base++; else base = dz_path;
@@ -100,6 +105,7 @@ static char* decompress_xdxf_dz(const char *dz_path, const char *temp_dir) {
     }
     fclose(out);
     gzclose(gz);
+    settings_scan_progress_notify(dz_path, 30);
     return out_path;
 }
 
@@ -113,13 +119,25 @@ typedef struct {
     char *resource_dir;
 } XdxfParserState;
 
-static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, volatile gint *cancel_flag, gint expected) {
+static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, const char *path, volatile gint *cancel_flag, gint expected) {
     int ret = xmlTextReaderRead(reader);
+    int total_ars = 0;
     while (ret == 1) {
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) break;
 
         const xmlChar *name = xmlTextReaderConstLocalName(reader);
         int type = xmlTextReaderNodeType(reader);
+        
+        if (type == XML_READER_TYPE_ELEMENT && xmlStrEqual(name, (const xmlChar*)"ar")) {
+            total_ars++;
+            if (total_ars % 100 == 0) {
+                /* We don't know total ARs, so we use a heuristic or just incrementing progress if possible.
+                 * Actually, let's use byte offset from the reader if available. */
+                int64_t offset = xmlTextReaderByteConsumed(reader);
+                /* We don't have total size here easily, but we can assume some progress. */
+                settings_scan_progress_notify(path, 30 + (total_ars / 500) % 65);
+            }
+        }
 
         if (type == XML_READER_TYPE_ELEMENT) {
             if (xmlStrEqual(name, (const xmlChar*)"xdxf")) {
@@ -301,6 +319,7 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, vo
         }
         ret = xmlTextReaderRead(reader);
     }
+    settings_scan_progress_notify(path, 95);
 }
 static void xdxf_save_meta(const char *cache_path, const char *name, const char *slang, const char *tlang) {
     GKeyFile *kf = g_key_file_new();
@@ -408,7 +427,7 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     state.current_offset = 8;
     state.resource_dir = res_dir;
 
-    process_xml_xdxf(reader, &state, cancel_flag, expected);
+    process_xml_xdxf(reader, &state, path, cancel_flag, expected);
 
     xmlFreeTextReader(reader);
     if (xml_path != path) {
@@ -470,5 +489,6 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     g_array_free(state.entries, TRUE);
     g_free(cache_path);
 
+    settings_scan_progress_notify(path, 100);
     return dict;
 }

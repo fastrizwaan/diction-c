@@ -12,8 +12,15 @@
 /* Normalize path strings used as keys in the scanning UI. This ensures the
  * same canonical form is used when creating rows and when progress updates
  * are reported from extraction code. Returns a newly-allocated string. */
+/* Normalize path strings used as keys in the scanning UI.
+ * This version avoids expensive disk I/O when possible. */
 static char *normalize_scan_path(const char *path) {
     if (!path) return g_strdup("");
+    /* If it's already an absolute path and doesn't contain "..",
+     * we skip full canonicalization to avoid disk I/O in tight loops. */
+    if (path[0] == '/' && !strstr(path, "/./") && !strstr(path, "/../")) {
+        return g_utf8_make_valid(path, -1);
+    }
     char *valid = g_utf8_make_valid(path, -1);
     char *canon = g_canonicalize_filename(valid, NULL);
     g_free(valid);
@@ -512,8 +519,12 @@ static void scan_context_update_processing_status(ScanContext *ctx) {
     }
 
     char buf[256];
-    g_snprintf(buf, sizeof(buf), "Processed %d of %d dictionaries",
-               ctx->processed_count, ctx->found_count);
+    if (ctx->processed_count < ctx->found_count) {
+        g_snprintf(buf, sizeof(buf), "Processing: %d discovered, %d finished...",
+                   ctx->found_count, ctx->processed_count);
+    } else {
+        g_snprintf(buf, sizeof(buf), "Discovered %d dictionaries", ctx->found_count);
+    }
     gtk_label_set_text(GTK_LABEL(ctx->status_label), buf);
 }
 
@@ -581,8 +592,22 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
             if (val) {
                 GtkWidget *row = val;
                 char buf[128];
-                g_snprintf(buf, sizeof(buf), "Extracting %d%%", sid->progress);
-                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), buf);
+                g_snprintf(buf, sizeof(buf), "%d%%", sid->progress);
+                
+                GtkWidget *progress_label = g_object_get_data(G_OBJECT(row), "scan-progress-label");
+                if (progress_label) {
+                    gtk_label_set_text(GTK_LABEL(progress_label), buf);
+                    gtk_widget_set_visible(progress_label, TRUE);
+                }
+
+                if (sid->progress < 100) {
+                    adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Extracting...");
+                    /* Move active row to top if it's currently processing */
+                    g_object_ref(row);
+                    gtk_list_box_remove(ctx->list, row);
+                    gtk_list_box_prepend(ctx->list, row);
+                    g_object_unref(row);
+                }
             }
         }
     } else if (sid->event_type == DICT_LOADER_EVENT_DISCOVERED) {
@@ -600,8 +625,15 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
 
         GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Processing...");
-        gtk_list_box_append(ctx->list, GTK_WIDGET(row));
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Discovered...");
+        
+        GtkWidget *progress_label = gtk_label_new("");
+        gtk_widget_add_css_class(progress_label, "dim-label");
+        gtk_widget_set_visible(progress_label, FALSE);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), progress_label);
+        g_object_set_data(G_OBJECT(row), "scan-progress-label", progress_label);
+
+        gtk_list_box_prepend(ctx->list, GTK_WIDGET(row));
         
         if (sid->path) {
             if (!ctx->row_map) ctx->row_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -620,6 +652,9 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
                     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
                 }
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sid->path);
+
+                GtkWidget *progress_label = g_object_get_data(G_OBJECT(row), "scan-progress-label");
+                if (progress_label) gtk_widget_set_visible(progress_label, FALSE);
 
                 if (!g_object_get_data(G_OBJECT(row), "scan-status-icon")) {
                     GtkWidget *check = gtk_image_new_from_icon_name("object-select-symbolic");
@@ -811,9 +846,24 @@ void settings_scan_notify(const char *name, const char *path, int event_type) {
  * dictionary path. Percent should be 0..100. This posts an idle to update
  * the UI row subtitle for the matching path. */
 void settings_scan_progress_notify(const char *path, int percent) {
-    GPtrArray *targets = g_ptr_array_new();
-    /* Precompute canonical path for matching and row lookup */
+    /* Use a static hash table to avoid redundant progress updates and expensive
+     * path normalization in the caller's thread if nothing changed. */
+    static GHashTable *last_percents = NULL;
+    static GMutex last_percents_mutex;
+
+    g_mutex_lock(&last_percents_mutex);
+    if (!last_percents) last_percents = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    
+    gpointer last_val = g_hash_table_lookup(last_percents, path);
+    if (last_val && GPOINTER_TO_INT(last_val) == percent) {
+        g_mutex_unlock(&last_percents_mutex);
+        return;
+    }
+    g_hash_table_replace(last_percents, g_strdup(path), GINT_TO_POINTER(percent));
+    g_mutex_unlock(&last_percents_mutex);
+
     char *canonical_path = normalize_scan_path(path);
+    GPtrArray *targets = g_ptr_array_new();
     g_mutex_lock(&active_scan_contexts_mutex);
     for (GList *l = active_scan_contexts; l; l = l->next) {
         ScanContext *ctx = l->data;

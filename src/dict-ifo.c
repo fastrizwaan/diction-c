@@ -20,6 +20,7 @@
 #include <glib.h>
 #include <ctype.h>
 #include "dict-cache.h"
+#include "settings.h"
 
 /* IFO uses multi-source cache validation since it has .ifo + .idx + .dict */
 
@@ -112,6 +113,10 @@ static gboolean load_file_bytes_gzip(const char *path, unsigned char **data_out,
         return FALSE;
     }
 
+    struct stat st;
+    int64_t total_src = (stat(path, &st) == 0) ? st.st_size : 1;
+    int64_t total_transferred = 0;
+
     size_t cap = 1024 * 1024;
     size_t len = 0;
     unsigned char *data = g_malloc(cap);
@@ -119,6 +124,12 @@ static gboolean load_file_bytes_gzip(const char *path, unsigned char **data_out,
 
     for (;;) {
         int n = gzread(gz, buf, sizeof(buf));
+        total_transferred += n;
+        if (total_src > 0 && n > 0 && (total_transferred % (1024 * 1024)) == 0) {
+            /* Heuristic: we report some progress for loading. 
+             * Since there are multiple files, we take only a small slice. */
+            settings_scan_progress_notify(path, (int)(total_transferred * 15 / total_src));
+        }
         if (n < 0) {
             g_free(data);
             gzclose(gz);
@@ -356,14 +367,28 @@ static gboolean build_stardict_cache(FILE *cache_file,
                                      size_t dict_raw_len,
                                      const char *sametypesequence,
                                      TreeEntry **entries_out,
-                                     size_t *entry_count_out) {
+                                     size_t *entry_count_out,
+                                     const char *path, volatile gint *cancel_flag, gint expected) {
     const unsigned char *ip = idx_data;
     const unsigned char *ie = idx_data + idx_size;
     size_t cap = 4096;
     size_t count = 0;
     TreeEntry *entries = g_new0(TreeEntry, cap);
 
+    size_t last_notified_idx = 0;
+    size_t notify_interval = idx_size / 20;
+    if (notify_interval < 1024) notify_interval = 1024;
+
     while (ip < ie) {
+        if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) break;
+        
+        size_t current_pos = ip - idx_data;
+        if (current_pos - last_notified_idx > notify_interval) {
+            int pct = 30 + (int)(current_pos * 65 / idx_size); /* 30% to 95% for indexing */
+            settings_scan_progress_notify(path, pct);
+            last_notified_idx = current_pos;
+        }
+
         const unsigned char *hw_start = ip;
         while (ip < ie && *ip != '\0') ip++;
         if (ip >= ie) {
@@ -553,8 +578,10 @@ DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint 
 
     TreeEntry *entries = NULL;
     size_t entry_count = 0;
+    settings_scan_progress_notify(ifo_path, 30);
     gboolean built = build_stardict_cache(cache_file, idx_data, idx_size, dict_raw, dict_raw_len,
-                                          sametypesequence, &entries, &entry_count);
+                                          sametypesequence, &entries, &entry_count,
+                                          ifo_path, cancel_flag, expected);
 
     if (built && entry_count > 0 && entries) {
         /* Flush data portion (without index yet), then read it back for sorting */
@@ -602,5 +629,6 @@ DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint 
 
     DictMmap *dict = open_cached_stardict(cache_path, bookname, resource_dir);
     g_free(cache_path);
+    settings_scan_progress_notify(ifo_path, 100);
     return dict;
 }

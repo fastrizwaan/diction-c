@@ -16,6 +16,7 @@
 #include <archive.h>
 #include <archive_entry.h>
 #include "dict-cache.h"
+#include "settings.h"
 
 /* insert_balanced removed — flat index uses sorted array + binary search */
 
@@ -168,7 +169,7 @@ static void dsl_parse_headers(DictMmap *dict, const char *data, size_t size) {
     }
 }
 
-static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries, size_t data_size, size_t data_start_offset) {
+static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries, size_t data_size, size_t data_start_offset, const char *path, volatile gint *cancel_flag, gint expected) {
     const char *p   = dict->data + data_start_offset;
     const char *end = dict->data + data_size;
 
@@ -208,11 +209,25 @@ static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries, si
     /* Pre-scan headers (idempotent, sets dict->name, dict->source_lang, etc.) */
     dsl_parse_headers(dict, p, (size_t)(end - p));
 
+    size_t last_notified_pos = 0;
+    size_t notify_interval = data_size / 10;
+    if (notify_interval < 1024) notify_interval = 1024;
+
     while (p < end) {
         const char *line_start = p;
 
         /* Advance to end-of-line */
         while (p < end && *p != '\n') p++;
+
+        if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) break;
+        size_t current_pos = (size_t)(p - dict->data);
+        if (current_pos - last_notified_pos > notify_interval) {
+            int pct = (int)((current_pos - data_start_offset) * 100 / data_size);
+            if (pct > 100) pct = 100;
+            settings_scan_progress_notify(path, pct);
+            last_notified_pos = current_pos;
+        }
+
         size_t len = (size_t)(p - line_start);
         if (p < end && *p == '\n') p++;
 
@@ -340,6 +355,7 @@ static size_t parse_dsl_into_entries(DictMmap *dict, TreeEntry **out_entries, si
         g_free(entries);
     }
     printf("[DEBUG] parse_dsl_into_entries: indexed %zu headwords.\n", word_count);
+    settings_scan_progress_notify(path, 100);
     return word_count;
 }
 
@@ -511,7 +527,7 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
             TreeEntry *entries = NULL;
             size_t data_size = dict->size;
             if (count > 0) data_size = dict->size - index_size;
-            size_t word_count = parse_dsl_into_entries(dict, &entries, data_size, 8);
+            size_t word_count = parse_dsl_into_entries(dict, &entries, data_size, 8, path, cancel_flag, expected);
 
             /* Check for cancellation before attempting to upgrade cache */
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
@@ -642,6 +658,10 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
             }
         }
 
+        struct stat src_st_size;
+        int64_t total_src_size = (stat(path, &src_st_size) == 0) ? src_st_size.st_size : 1;
+        int64_t total_processed = 0;
+
         unsigned char in_buf[65536];
         unsigned char out_buf[65536 * 2];
 
@@ -650,6 +670,11 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         int bytes_read;
 
         while ((bytes_read = gzread(gz, in_buf + has_pending, 65536 - has_pending)) > 0) {
+            total_processed += bytes_read;
+            if ((total_processed % (1024 * 1024)) == 0) {
+                int pct = (int)(total_processed * 40 / total_src_size); /* 40% for conversion */
+                settings_scan_progress_notify(path, pct);
+            }
             /* Honor cancellation request as soon as possible */
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
                 gzclose(gz);
@@ -719,8 +744,9 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
 
         dict->data = (const char*)map;
 
+        settings_scan_progress_notify(path, 45);
         TreeEntry *entries = NULL;
-        size_t word_count = parse_dsl_into_entries(dict, &entries, dict->size, 8);
+        size_t word_count = parse_dsl_into_entries(dict, &entries, dict->size, 8, path, cancel_flag, expected);
 
         if (word_count > 0 && entries) {
             // Append entries to cache file

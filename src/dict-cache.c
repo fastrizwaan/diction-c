@@ -1,4 +1,5 @@
 #include "dict-cache.h"
+#include <stdio.h>
 #include <sys/stat.h>
 #include <utime.h>
 #include <unistd.h>
@@ -25,9 +26,20 @@ char* dict_cache_path_for(const char *original_path) {
 
 gboolean dict_cache_is_valid(const char *cache_path, const char *original_path) {
     struct stat cache_st, orig_st;
-    if (stat(cache_path, &cache_st) != 0 || stat(original_path, &orig_st) != 0)
+    if (stat(cache_path, &cache_st) != 0) {
+        // fprintf(stderr, "[CACHE] Missing cache: %s\n", cache_path);
         return FALSE;
-    return cache_st.st_mtime >= orig_st.st_mtime;
+    }
+    if (stat(original_path, &orig_st) != 0) {
+        return FALSE;
+    }
+    gboolean valid = (cache_st.st_mtime >= orig_st.st_mtime);
+    if (!valid) {
+        fprintf(stderr, "[CACHE] MISS (outdated): %s (cache=%ld, orig=%ld)\n", original_path, (long)cache_st.st_mtime, (long)orig_st.st_mtime);
+    } else {
+        fprintf(stderr, "[CACHE] HIT: %s\n", original_path);
+    }
+    return valid;
 }
 
 gboolean dict_cache_ensure_dir(void) {
