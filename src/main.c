@@ -3886,7 +3886,6 @@ static void execute_search_now(void) {
     }
 
     const char *query_raw = gtk_editable_get_text(GTK_EDITABLE(search_entry));
-    fprintf(stderr, "[DEBUG] execute_search_now: querying for '%s'\n", query_raw);
     execute_search_now_for_query(query_raw, TRUE);
 }
 
@@ -4049,7 +4048,6 @@ static void append_rendered_word_html(const char *raw_word) {
 static void on_search_changed(GtkEditable *entry, gpointer user_data) {
     (void)user_data;
     
-    fprintf(stderr, "[DEBUG] on_search_changed: started. focus=%d\n", gtk_widget_has_focus(GTK_WIDGET(entry)));
     if (gtk_widget_has_focus(GTK_WIDGET(entry))) {
         if (tab_view) {
             AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
@@ -4128,16 +4126,6 @@ typedef struct {
 static gboolean on_random_word_found_idle(gpointer user_data) {
     RandomWordIdleData *id = user_data;
     if (id->clean_hw) {
-        if (tab_view) {
-            AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
-            if (page && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(page), "is-firm"))) {
-                g_signal_handlers_block_by_func(tab_view, on_tab_selected, NULL);
-                create_new_tab("Search", TRUE);
-                g_signal_handlers_unblock_by_func(tab_view, on_tab_selected, NULL);
-            }
-        }
-
-        fprintf(stderr, "[DEBUG] on_random_word_found_idle: setting text to '%s'\n", id->clean_hw);
         gtk_editable_set_text(GTK_EDITABLE(search_entry), id->clean_hw);
         if (search_button_label) {
             gtk_label_set_text(GTK_LABEL(search_button_label), id->clean_hw);
