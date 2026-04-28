@@ -455,6 +455,7 @@ static void render_idle_page_to_webview(WebKitWebView *target_wv,
 static void render_query_to_webview(const char *query_raw, WebKitWebView *target_wv, gboolean push_history);
 static void populate_search_sidebar(const char *query);
 static void execute_search_now(void);
+static void execute_search_now_for_query(const char *query_raw, gboolean push_history);
 static void activate_dictionary_entry(DictEntry *e);
 static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded);
 static gboolean on_dict_loaded_idle(gpointer user_data);
@@ -2953,7 +2954,9 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
             const char *word = uri + 7;
             char *unescaped = g_uri_unescape_string(word, NULL);
             char *clean_link = normalize_headword_for_search(unescaped ? unescaped : word, TRUE);
-            gtk_editable_set_text(GTK_EDITABLE(user_data), clean_link ? clean_link : (unescaped ? unescaped : word));
+            const char *final_word = clean_link ? clean_link : (unescaped ? unescaped : word);
+            gtk_editable_set_text(GTK_EDITABLE(user_data), final_word);
+            execute_search_now_for_query(final_word, TRUE);
             g_free(clean_link);
             g_free(unescaped);
             webkit_policy_decision_ignore(d);
@@ -3883,6 +3886,7 @@ static void execute_search_now(void) {
     }
 
     const char *query_raw = gtk_editable_get_text(GTK_EDITABLE(search_entry));
+    fprintf(stderr, "[DEBUG] execute_search_now: querying for '%s'\n", query_raw);
     execute_search_now_for_query(query_raw, TRUE);
 }
 
@@ -4045,6 +4049,7 @@ static void append_rendered_word_html(const char *raw_word) {
 static void on_search_changed(GtkEditable *entry, gpointer user_data) {
     (void)user_data;
     
+    fprintf(stderr, "[DEBUG] on_search_changed: started. focus=%d\n", gtk_widget_has_focus(GTK_WIDGET(entry)));
     if (gtk_widget_has_focus(GTK_WIDGET(entry))) {
         if (tab_view) {
             AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
@@ -4113,6 +4118,8 @@ static void on_search_changed(GtkEditable *entry, gpointer user_data) {
     schedule_execute_search();
 }
 
+static gboolean on_random_word_found_idle(gpointer user_data);
+
 typedef struct {
     char *word;
     char *clean_hw;
@@ -4121,10 +4128,22 @@ typedef struct {
 static gboolean on_random_word_found_idle(gpointer user_data) {
     RandomWordIdleData *id = user_data;
     if (id->clean_hw) {
+        if (tab_view) {
+            AdwTabPage *page = adw_tab_view_get_selected_page(tab_view);
+            if (page && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(page), "is-firm"))) {
+                g_signal_handlers_block_by_func(tab_view, on_tab_selected, NULL);
+                create_new_tab("Search", TRUE);
+                g_signal_handlers_unblock_by_func(tab_view, on_tab_selected, NULL);
+            }
+        }
+
+        fprintf(stderr, "[DEBUG] on_random_word_found_idle: setting text to '%s'\n", id->clean_hw);
         gtk_editable_set_text(GTK_EDITABLE(search_entry), id->clean_hw);
         if (search_button_label) {
             gtk_label_set_text(GTK_LABEL(search_button_label), id->clean_hw);
         }
+
+        execute_search_now_for_query(id->clean_hw, TRUE);
     }
     g_free(id->word);
     g_free(id->clean_hw);
