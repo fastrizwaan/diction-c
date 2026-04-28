@@ -520,10 +520,12 @@ static void scan_context_update_processing_status(ScanContext *ctx) {
 
     char buf[256];
     if (ctx->processed_count < ctx->found_count) {
-        g_snprintf(buf, sizeof(buf), "Processing: %d discovered, %d finished...",
-                   ctx->found_count, ctx->processed_count);
+        g_snprintf(buf, sizeof(buf), "Loading %d of %d…",
+                   ctx->processed_count + 1, ctx->found_count);
+    } else if (ctx->found_count > 0) {
+        g_snprintf(buf, sizeof(buf), "Found %d dictionaries", ctx->found_count);
     } else {
-        g_snprintf(buf, sizeof(buf), "Discovered %d dictionaries", ctx->found_count);
+        g_snprintf(buf, sizeof(buf), "Scanning for dictionaries…");
     }
     gtk_label_set_text(GTK_LABEL(ctx->status_label), buf);
 }
@@ -625,22 +627,51 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
 
         GtkWidget *row = new_plain_action_row();
         adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
-        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Discovered...");
-        
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Queued");
+
+        /* Per-row spinner — starts stopped, becomes visible when loading begins */
+        GtkWidget *row_spinner = gtk_spinner_new();
+        gtk_widget_set_visible(row_spinner, FALSE);
+        adw_action_row_add_suffix(ADW_ACTION_ROW(row), row_spinner);
+        g_object_set_data(G_OBJECT(row), "scan-row-spinner", row_spinner);
+
+        /* Legacy progress label kept for compat with progress-update path */
         GtkWidget *progress_label = gtk_label_new("");
         gtk_widget_add_css_class(progress_label, "dim-label");
         gtk_widget_set_visible(progress_label, FALSE);
         adw_action_row_add_suffix(ADW_ACTION_ROW(row), progress_label);
         g_object_set_data(G_OBJECT(row), "scan-progress-label", progress_label);
 
-        gtk_list_box_prepend(ctx->list, GTK_WIDGET(row));
-        
+        gtk_list_box_append(ctx->list, GTK_WIDGET(row));
+
         if (sid->path) {
             if (!ctx->row_map) ctx->row_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
             g_hash_table_replace(ctx->row_map, g_strdup(sid->path), row);
         }
         ctx->found_count++;
         scan_context_update_processing_status(ctx);
+
+    } else if (sid->event_type == DICT_LOADER_EVENT_STARTED) {
+        /* A specific path has just begun loading — promote it to top with spinner */
+        if (sid->path && ctx->row_map) {
+            gpointer val = g_hash_table_lookup(ctx->row_map, sid->path);
+            if (val) {
+                GtkWidget *row = val;
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Loading\xe2\x80\xa6");
+
+                GtkWidget *row_spinner = g_object_get_data(G_OBJECT(row), "scan-row-spinner");
+                if (row_spinner) {
+                    gtk_spinner_start(GTK_SPINNER(row_spinner));
+                    gtk_widget_set_visible(row_spinner, TRUE);
+                }
+
+                /* Promote active row to top so user sees what's being processed */
+                g_object_ref(row);
+                gtk_list_box_remove(ctx->list, row);
+                gtk_list_box_prepend(ctx->list, row);
+                g_object_unref(row);
+            }
+        }
 
     } else if (sid->event_type == DICT_LOADER_EVENT_FINISHED) {
         /* Update row with final name and tick mark when finished. */
@@ -652,6 +683,13 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
                     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
                 }
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row), sid->path);
+
+                /* Stop and hide the per-row loading spinner */
+                GtkWidget *row_spinner = g_object_get_data(G_OBJECT(row), "scan-row-spinner");
+                if (row_spinner) {
+                    gtk_spinner_stop(GTK_SPINNER(row_spinner));
+                    gtk_widget_set_visible(row_spinner, FALSE);
+                }
 
                 GtkWidget *progress_label = g_object_get_data(G_OBJECT(row), "scan-progress-label");
                 if (progress_label) gtk_widget_set_visible(progress_label, FALSE);
@@ -677,6 +715,13 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
                     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
                 }
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Failed to load");
+
+                /* Stop and hide the per-row loading spinner */
+                GtkWidget *row_spinner = g_object_get_data(G_OBJECT(row), "scan-row-spinner");
+                if (row_spinner) {
+                    gtk_spinner_stop(GTK_SPINNER(row_spinner));
+                    gtk_widget_set_visible(row_spinner, FALSE);
+                }
 
                 if (!g_object_get_data(G_OBJECT(row), "scan-status-icon")) {
                     GtkWidget *icon = gtk_image_new_from_icon_name("dialog-warning-symbolic");
@@ -936,7 +981,7 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
     gtk_box_append(GTK_BOX(status_box), status);
     gtk_box_append(GTK_BOX(content), status_box);
 
-    GtkWidget *description = gtk_label_new("Discovered dictionaries will appear here as they are loaded.");
+    GtkWidget *description = gtk_label_new("Files appear as they are discovered. The currently loading entry moves to the top.");
     gtk_label_set_xalign(GTK_LABEL(description), 0.0f);
     gtk_widget_add_css_class(description, "dim-label");
     gtk_box_append(GTK_BOX(content), description);
@@ -1009,12 +1054,16 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
 
         adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(data->dialog));
 
-        /* Kick off the main loader ASYNCHRONOUSLY to let the dialog show first */
+        /* Kick off the main loader after a short delay so the dialog has time
+         * to actually paint and appear on screen before the background thread
+         * starts posting work. g_idle_add fires before GTK finishes rendering
+         * the new window, so the dialog would stay invisible until all loading
+         * was done. A 150ms timeout gives GTK enough frames to present it. */
         if (data->reload_callback) {
             ReloadArgs *ra = g_new0(ReloadArgs, 1);
             ra->cb = data->reload_callback;
             ra->data = data->user_data;
-            g_idle_add(idle_reload_callback, ra);
+            g_timeout_add(150, idle_reload_callback, ra);
         }
 
         /* Free the dirs array passed in by caller (we duplicated the strings into ctx) */

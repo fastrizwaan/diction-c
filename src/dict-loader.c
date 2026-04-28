@@ -504,9 +504,7 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
         discovery_entry.format = c->format;
         callback(&discovery_entry, DICT_LOADER_EVENT_DISCOVERED, user_data);
         fprintf(stderr, "[SCANNER] Discovered %s\n", c->path);
-        
-        /* Throttle discovery notifications to avoid flooding the main loop if hundreds of files are found */
-        if ((discovery_count++ % 20) == 0) g_usleep(20000); /* 20ms pause every 20 files */
+        discovery_count++;
     }
 
     /* Phase 2: Throttled loading and indexing */
@@ -516,9 +514,6 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
         DictCandidate *c = l->data;
 
         callback(NULL, DICT_LOADER_EVENT_STARTED, user_data);
-
-        /* Give the system a breath before each heavy load to maintain UI responsiveness */
-        g_usleep(200000); /* 200ms throttle */
 
         fprintf(stderr, "[SCANNER] Loading %s...\n", c->path);
         DictMmap *loaded = dict_load_any(c->path, c->format, cancel_flag, expected_generation);

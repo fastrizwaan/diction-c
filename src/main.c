@@ -5637,10 +5637,16 @@ static void load_one_dict_worker(gpointer data, gpointer user_data) {
         return;
     }
 
-    /* Give the system a small gap between sequential dictionary loads to avoid I/O spikes */
-    g_usleep(150000); /* 150ms throttle */
-
     DictFormat fmt = dict_detect_format(la->path);
+
+    /* Notify scan dialog that this specific file is now being loaded */
+    {
+        extern void settings_scan_notify(const char *name, const char *path, int event_type);
+        char *bn = g_path_get_basename(la->path);
+        settings_scan_notify(bn ? bn : "(loading)", la->path, DICT_LOADER_EVENT_STARTED);
+        g_free(bn);
+    }
+
     fprintf(stderr, "[LOADER] Starting %s (fmt=%d)\n", la->path, fmt);
     DictMmap *dict = dict_load_any(la->path, fmt, &loader_generation, la->generation);
     fprintf(stderr, "[LOADER] Finished %s -> %s\n", la->path, dict ? "SUCCESS" : "FAILED");
@@ -5679,9 +5685,7 @@ static gpointer dict_load_thread(gpointer user_data) {
     GCancellable *cancellable = g_object_ref(loader_cancellable);
     g_mutex_unlock(&loader_cancel_mutex);
 
-    g_mutex_lock(&dict_loader_mutex);
     if (args->generation != g_atomic_int_get(&loader_generation)) {
-        g_mutex_unlock(&dict_loader_mutex);
         g_object_unref(cancellable);
         goto cleanup;
     }
@@ -5771,8 +5775,6 @@ static gpointer dict_load_thread(gpointer user_data) {
             }
         }
     }
-
-    g_mutex_unlock(&dict_loader_mutex);
 
 cleanup:
     queue_loader_idle(LOAD_IDLE_DONE, args->generation,

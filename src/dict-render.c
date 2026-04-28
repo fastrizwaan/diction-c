@@ -2197,7 +2197,7 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, ".dsl-media-image{display:block;max-width:100%;height:auto;margin:0.35em 0;}");
     buf_append_str(&b, ".trn, .sense{color:");
     buf_append_str(&b, trn_color);
-    buf_append_str(&b, ";display:block;margin:2px 0;line-height:1.4;}");
+    buf_append_str(&b, ";line-height:1.4;}");
     buf_append_str(&b, ".ex, em{color:");
     buf_append_str(&b, ex_color);
     buf_append_str(&b, ";font-style:italic;}");
@@ -2206,13 +2206,14 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, ";display:inline;}");
     buf_append_str(&b, ".pos, .main_entry_pos{color:");
     buf_append_str(&b, pos_color);
-    buf_append_str(&b, ";font-style:italic;font-weight:normal;display:block;margin:2px 0;}");
+    buf_append_str(&b, ";font-style:italic;font-weight:normal;}");
     buf_append_str(&b, ".trn-label{margin-right:6px;}");
     buf_append_str(&b, ".pos .trn,.trn .pos{color:inherit;font-style:inherit;}");
     buf_append_str(&b, ".translit{color:");
     buf_append_str(&b, translit_color);
     buf_append_str(&b, ";font-style:italic;}");
     buf_append_str(&b, ".m-line{line-height:1.4;margin:2px 0;}");
+    buf_append_str(&b, ".m-line br:last-child{display:none;}");
     buf_append_str(&b, "hr{border:none;border-top:1px solid ");
     buf_append_str(&b, border_color);
     buf_append_str(&b, ";margin:10px 0;}");
@@ -2244,7 +2245,7 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, ".m11{color:"); buf_append_str(&b, translit_color); buf_append_str(&b, ";}");
     /* entry structure */
     buf_append_str(&b, ".rendered-entry{margin:0 0 10px 0;}");
-    buf_append_str(&b, ".rendered-entry-body{line-height:1.45; white-space: pre-wrap;}");
+    buf_append_str(&b, ".rendered-entry-body{line-height:1.45;}");
     buf_append_str(&b, ".dict-source-bar{background:");
     buf_append_str(&b, border_color);
     buf_append_str(&b, ";color:");
@@ -2924,7 +2925,7 @@ char* dsl_render_to_html(const char *dsl_text,
             } else { i++; continue; }
         }
         else if (dsl_text[i] == '\n') {
-            if (!in_media) buf_append_str(&b, "<br>\n");
+            if (!in_media) buf_append_str(&b, "\n");
             i++;
             continue;
         } 
