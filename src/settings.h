@@ -83,4 +83,5 @@ gboolean settings_dictionary_enabled_by_path(AppSettings *settings, const char *
 gboolean settings_set_dictionary_enabled_by_id(AppSettings *settings, const char *id, gboolean enabled);
 char* settings_resolve_dictionary_name(const char *path);
 void settings_scan_progress_notify(const char *path, int percent);
+void settings_scan_notify(const char *name, const char *path, int event_type);
 gboolean path_is_inside_dir(const char *path, const char *dir_path);

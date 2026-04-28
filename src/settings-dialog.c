@@ -440,11 +440,21 @@ typedef struct {
     gint closed;
 } ScanContext;
 
+typedef enum {
+    SCAN_EVENT_DISCOVERED = 0,
+    SCAN_EVENT_LOAD_START,
+    SCAN_EVENT_LOAD_SUCCESS,
+    SCAN_EVENT_LOAD_FAILURE,
+    SCAN_EVENT_IMPORT_START,
+    SCAN_EVENT_IMPORT_SUCCESS,
+    SCAN_EVENT_IMPORT_FAILURE
+} ScanIdleEvent;
+
 typedef struct {
     ScanContext *ctx;
     char *name;
     char *path;
-    int event_type; /* DictLoaderEventType or -1 for end-of-scan */
+    int event_type; /* ScanIdleEvent or DictLoaderEventType */
     gboolean is_progress_update;
     gboolean is_status_update;
     int progress;
@@ -454,11 +464,17 @@ typedef struct {
     ScanContext *ctx;
     char **dirs;
     int n_dirs;
+    GListModel *files; /* Opt: if set, we handle these files */
+    gboolean is_import;
 } ScanThreadArgs;
 
 /* Active scan contexts registered when integrating with the main loader */
 static GList *active_scan_contexts = NULL;
 static GMutex active_scan_contexts_mutex;
+
+static void on_scan_cancel_clicked(GtkButton *btn, ScanContext *ctx);
+static void on_scan_close_clicked(GtkButton *btn, ScanContext *ctx);
+static void on_scan_dialog_closed(ScanContext *ctx);
 
 static ScanContext *scan_context_ref(ScanContext *ctx) {
     if (ctx) {
@@ -612,8 +628,8 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
                 }
             }
         }
-    } else if (sid->event_type == DICT_LOADER_EVENT_DISCOVERED) {
-        /* Add a new dictionary row as soon as it's found. */
+    } else if (sid->event_type == SCAN_EVENT_DISCOVERED || sid->event_type == DICT_LOADER_EVENT_DISCOVERED) {
+        /* Add a new dictionary row as soon as it's found (scan) or added (file). */
         if (sid->path && ctx->row_map) {
             gpointer existing = g_hash_table_lookup(ctx->row_map, sid->path);
             if (existing) {
@@ -650,35 +666,60 @@ static gboolean scan_idle_add_entry(gpointer user_data) {
         }
         ctx->found_count++;
         scan_context_update_processing_status(ctx);
-
-    } else if (sid->event_type == DICT_LOADER_EVENT_STARTED) {
+        
+        /* If it's an import-start event, immediately trigger the started-import UI */
+        if (sid->event_type == SCAN_EVENT_IMPORT_START) sid->event_type = SCAN_EVENT_IMPORT_START; 
+        /* fall through logic conceptually... but here we just continue to next blocks if we didn't exit */
+    }
+    
+    if (sid->event_type == SCAN_EVENT_LOAD_START || sid->event_type == DICT_LOADER_EVENT_STARTED) {
         /* A specific path has just begun loading — promote it to top with spinner */
         if (sid->path && ctx->row_map) {
-            gpointer val = g_hash_table_lookup(ctx->row_map, sid->path);
-            if (val) {
-                GtkWidget *row = val;
+            GtkWidget *row = g_hash_table_lookup(ctx->row_map, sid->path);
+            if (row) {
                 adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Loading\xe2\x80\xa6");
-
                 GtkWidget *row_spinner = g_object_get_data(G_OBJECT(row), "scan-row-spinner");
                 if (row_spinner) {
                     gtk_spinner_start(GTK_SPINNER(row_spinner));
                     gtk_widget_set_visible(row_spinner, TRUE);
                 }
-
-                /* Promote active row to top so user sees what's being processed */
                 g_object_ref(row);
                 gtk_list_box_remove(ctx->list, row);
                 gtk_list_box_prepend(ctx->list, row);
                 g_object_unref(row);
             }
         }
-
-    } else if (sid->event_type == DICT_LOADER_EVENT_FINISHED) {
+    } else if (sid->event_type == SCAN_EVENT_IMPORT_START) {
+        /* File import copy phase started */
+        if (sid->path && ctx->row_map) {
+            GtkWidget *row = g_hash_table_lookup(ctx->row_map, sid->path);
+            if (row) {
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Copying\xe2\x80\xa6");
+                GtkWidget *row_spinner = g_object_get_data(G_OBJECT(row), "scan-row-spinner");
+                if (row_spinner) {
+                    gtk_spinner_start(GTK_SPINNER(row_spinner));
+                    gtk_widget_set_visible(row_spinner, TRUE);
+                }
+                g_object_ref(row);
+                gtk_list_box_remove(ctx->list, row);
+                gtk_list_box_prepend(ctx->list, row);
+                g_object_unref(row);
+            }
+        }
+    } else if (sid->event_type == SCAN_EVENT_IMPORT_SUCCESS) {
+        if (sid->path && ctx->row_map) {
+            GtkWidget *row = g_hash_table_lookup(ctx->row_map, sid->path);
+            if (row) {
+                adw_action_row_set_subtitle(ADW_ACTION_ROW(row), "Copied. Waiting to load\xe2\x80\xa6");
+                GtkWidget *row_spinner = g_object_get_data(G_OBJECT(row), "scan-row-spinner");
+                if (row_spinner) gtk_spinner_stop(GTK_SPINNER(row_spinner));
+            }
+        }
+    } else if (sid->event_type == SCAN_EVENT_LOAD_SUCCESS || sid->event_type == DICT_LOADER_EVENT_FINISHED) {
         /* Update row with final name and tick mark when finished. */
         if (sid->path && ctx->row_map) {
-            gpointer val = g_hash_table_lookup(ctx->row_map, sid->path);
-            if (val) {
-                GtkWidget *row = val;
+            GtkWidget *row = g_hash_table_lookup(ctx->row_map, sid->path);
+            if (row) {
                 if (sid->name && *sid->name) {
                     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), sid->name);
                 }
@@ -809,6 +850,198 @@ static gpointer scan_thread_func(gpointer user_data) {
     g_free(args);
     scan_context_unref(ctx);
     return NULL;
+}
+
+static gpointer file_import_thread_func(gpointer data) {
+    ScanThreadArgs *args = data;
+    ScanContext *ctx = args->ctx;
+    GListModel *files = args->files;
+    gboolean is_import = args->is_import;
+
+    guint n = g_list_model_get_n_items(files);
+    for (guint i = 0; i < n && !ctx->cancelled; i++) {
+        GObject *obj = g_list_model_get_item(files, i);
+        GFile *file = G_FILE(obj);
+        char *path = g_file_get_path(file);
+        if (!path) {
+            g_object_unref(obj);
+            continue;
+        }
+
+        char *name = settings_resolve_dictionary_name(path);
+        
+        /* Post DISCOVERED event */
+        ScanIdleData *sid = g_new0(ScanIdleData, 1);
+        sid->ctx = scan_context_ref(ctx);
+        sid->name = g_strdup(name);
+        sid->path = normalize_scan_path(path);
+        sid->event_type = SCAN_EVENT_DISCOVERED;
+        g_idle_add(scan_idle_add_entry, sid);
+
+        if (is_import) {
+            /* Post IMPORT_START */
+            sid = g_new0(ScanIdleData, 1);
+            sid->ctx = scan_context_ref(ctx);
+            sid->path = normalize_scan_path(path);
+            sid->event_type = SCAN_EVENT_IMPORT_START;
+            g_idle_add(scan_idle_add_entry, sid);
+
+            if (settings_import_dictionary(ctx->data->settings, path)) {
+                sid = g_new0(ScanIdleData, 1);
+                sid->ctx = scan_context_ref(ctx);
+                sid->path = normalize_scan_path(path);
+                sid->event_type = SCAN_EVENT_IMPORT_SUCCESS;
+                g_idle_add(scan_idle_add_entry, sid);
+            } else {
+                sid = g_new0(ScanIdleData, 1);
+                sid->ctx = scan_context_ref(ctx);
+                sid->path = normalize_scan_path(path);
+                sid->event_type = SCAN_EVENT_IMPORT_FAILURE;
+                g_idle_add(scan_idle_add_entry, sid);
+            }
+        } else {
+            /* Link: just add it */
+            settings_add_dictionary(ctx->data->settings, name, path);
+            sid = g_new0(ScanIdleData, 1);
+            sid->ctx = scan_context_ref(ctx);
+            sid->path = normalize_scan_path(path);
+            sid->event_type = SCAN_EVENT_IMPORT_SUCCESS; // reusing success status for linking too
+            g_idle_add(scan_idle_add_entry, sid);
+        }
+
+        g_free(name);
+        g_free(path);
+        g_object_unref(obj);
+    }
+
+    /* Trigger the main loader reload now that the copy/link phase is done.
+     * We don't send a -1 event here because we want the dialog to stay open
+     * while the main loader actually parses the files. */
+    if (!ctx->cancelled && ctx->data && ctx->data->reload_callback) {
+        ctx->data->reload_callback(ctx->data->user_data);
+    }
+
+    /* Free thread args */
+    g_object_unref(files);
+    g_free(args);
+    scan_context_unref(ctx);
+    return NULL;
+}
+
+void show_scan_dialog_for_files(SettingsDialogData *data, GListModel *files, gboolean is_import) {
+    int n_files = (int)g_list_model_get_n_items(files);
+    
+    /* We reuse the folder-scan dialog UI logic. 
+     * call_reload=TRUE so it persists until the main loader finishes. */
+    AdwDialog *dialog = adw_dialog_new();
+    adw_dialog_set_title(dialog, is_import ? "Importing Dictionaries" : "Adding Dictionaries");
+    adw_dialog_set_content_width(dialog, 720);
+    adw_dialog_set_content_height(dialog, 520);
+    adw_dialog_set_follows_content_size(dialog, FALSE);
+
+    GtkWidget *toolbar_view = adw_toolbar_view_new();
+    GtkWidget *header_bar = adw_header_bar_new();
+    gtk_widget_add_css_class(header_bar, "flat");
+    GtkWidget *title = gtk_label_new(is_import ? "Importing Dictionaries" : "Adding Dictionaries");
+    gtk_widget_add_css_class(title, "title");
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header_bar), title);
+    adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(toolbar_view), header_bar);
+
+    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_top(content, 18);
+    gtk_widget_set_margin_bottom(content, 18);
+    gtk_widget_set_margin_start(content, 18);
+    gtk_widget_set_margin_end(content, 18);
+
+    GtkWidget *status_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *spinner = gtk_spinner_new();
+    gtk_spinner_start(GTK_SPINNER(spinner));
+    gtk_box_append(GTK_BOX(status_box), spinner);
+
+    GtkWidget *status = gtk_label_new(is_import ? "Importing files..." : "Adding files...");
+    gtk_label_set_wrap(GTK_LABEL(status), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(status), 0.0f);
+    gtk_widget_set_hexpand(status, TRUE);
+    gtk_box_append(GTK_BOX(status_box), status);
+    gtk_box_append(GTK_BOX(content), status_box);
+
+    GtkWidget *description = gtk_label_new("Processing files. They will be loaded automatically when finished.");
+    gtk_label_set_xalign(GTK_LABEL(description), 0.0f);
+    gtk_widget_add_css_class(description, "dim-label");
+    gtk_box_append(GTK_BOX(content), description);
+
+    GtkWidget *scroller = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(scroller, TRUE);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroller), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+
+    GtkListBox *list = GTK_LIST_BOX(gtk_list_box_new());
+    gtk_list_box_set_selection_mode(list, GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(GTK_WIDGET(list), "boxed-list");
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), GTK_WIDGET(list));
+    gtk_box_append(GTK_BOX(content), scroller);
+
+    adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(toolbar_view), content);
+
+    GtkWidget *footer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_top(footer, 12);
+    gtk_widget_set_margin_bottom(footer, 12);
+    gtk_widget_set_margin_start(footer, 18);
+    gtk_widget_set_margin_end(footer, 18);
+    GtkWidget *spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(footer), spacer);
+
+    GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
+    GtkWidget *close_btn = gtk_button_new_with_label("Close");
+    gtk_widget_set_sensitive(close_btn, FALSE);
+    gtk_box_append(GTK_BOX(footer), cancel_btn);
+    gtk_box_append(GTK_BOX(footer), close_btn);
+    adw_toolbar_view_add_bottom_bar(ADW_TOOLBAR_VIEW(toolbar_view), footer);
+
+    adw_dialog_set_child(dialog, toolbar_view);
+
+    ScanContext *ctx = g_new0(ScanContext, 1);
+    ctx->data = data;
+    ctx->dialog = dialog;
+    ctx->list = list;
+    ctx->status_label = status;
+    ctx->spinner = spinner;
+    ctx->cancel_btn = cancel_btn;
+    ctx->close_btn = close_btn;
+    ctx->found_count = 0;
+    ctx->total_dirs = n_files;
+    ctx->call_reload = TRUE; /* Persist until loader finishes */
+    ctx->ref_count = 1;
+
+    /* Register context so main loader can notify it */
+    ctx->n_scan_dirs = n_files;
+    ctx->scan_dirs = g_new0(char *, n_files + 1);
+    for (int i = 0; i < n_files; i++) {
+        GObject *obj = g_list_model_get_item(files, (guint)i);
+        char *path = g_file_get_path(G_FILE(obj));
+        ctx->scan_dirs[i] = normalize_scan_path(path);
+        g_free(path);
+        g_object_unref(obj);
+    }
+    
+    g_mutex_lock(&active_scan_contexts_mutex);
+    active_scan_contexts = g_list_prepend(active_scan_contexts, ctx);
+    g_mutex_unlock(&active_scan_contexts_mutex);
+
+    g_signal_connect(cancel_btn, "clicked", G_CALLBACK(on_scan_cancel_clicked), ctx);
+    g_signal_connect(close_btn, "clicked", G_CALLBACK(on_scan_close_clicked), ctx);
+    g_signal_connect_swapped(dialog, "closed", G_CALLBACK(on_scan_dialog_closed), ctx);
+
+    adw_dialog_present(ADW_DIALOG(dialog), GTK_WIDGET(data->dialog));
+
+    ScanThreadArgs *args = g_new0(ScanThreadArgs, 1);
+    args->ctx = ctx;
+    args->files = g_object_ref(files);
+    args->is_import = is_import;
+
+    scan_context_ref(ctx);
+    GThread *t = g_thread_new("settings-file-import", file_import_thread_func, args);
+    g_thread_unref(t);
 }
 
 static void on_scan_cancel_clicked(GtkButton *btn, ScanContext *ctx) {
@@ -1163,38 +1396,8 @@ static void on_add_dictionary_file_response(GObject *source, GAsyncResult *resul
     GError *error = NULL;
     GListModel *files = gtk_file_dialog_open_multiple_finish(chooser, result, &error);
     if (files) {
-        guint before = data->settings->dictionaries->len;
-        GPtrArray *added_names = g_ptr_array_new_with_free_func(g_free);
-        guint n = g_list_model_get_n_items(files);
-        for (guint i = 0; i < n; i++) {
-            GObject *obj = g_list_model_get_item(files, i);
-            GFile *file = G_FILE(obj);
-            char *path = g_file_get_path(file);
-            if (path) {
-                char *name = settings_resolve_dictionary_name(path);
-                settings_add_dictionary(data->settings, name, path);
-                g_ptr_array_add(added_names, g_strdup(name));
-                g_free(name);
-                g_free(path);
-            }
-            g_object_unref(obj);
-        }
+        show_scan_dialog_for_files(data, files, FALSE);
         g_object_unref(files);
-        update_dict_list(data);
-        guint added = data->settings->dictionaries->len > before
-            ? data->settings->dictionaries->len - before
-            : 0;
-        if (added > 0) {
-            char *name_list = format_name_list(added_names);
-            char *message = name_list[0] != '\0'
-                ? g_strdup_printf("Added %u dictionaries: %s", added, name_list)
-                : g_strdup_printf("Added %u dictionary files.", added);
-            present_dictionary_feedback(data, added, 0, 0, message);
-            g_free(message);
-            g_free(name_list);
-        }
-        g_ptr_array_free(added_names, TRUE);
-        if (data->reload_callback) data->reload_callback(data->user_data);
     } else if (error) {
         g_error_free(error);
     }
@@ -1240,42 +1443,8 @@ static void on_import_dictionary_files_response(GObject *source, GAsyncResult *r
     GError *error = NULL;
     GListModel *files = gtk_file_dialog_open_multiple_finish(chooser, result, &error);
     if (files) {
-        guint imported = 0;
-        GPtrArray *imported_names = g_ptr_array_new_with_free_func(g_free);
-        guint n = g_list_model_get_n_items(files);
-        for (guint i = 0; i < n; i++) {
-            GObject *obj = g_list_model_get_item(files, i);
-            GFile *file = G_FILE(obj);
-            char *path = g_file_get_path(file);
-            if (path) {
-                /* Import (copy) into app data and add to settings */
-                if (!settings_import_dictionary(data->settings, path)) {
-                    g_printerr("Failed to import: %s\n", path);
-                } else {
-                    imported++;
-                    char *name = g_path_get_basename(path);
-                    char *ext = strrchr(name, '.');
-                    if (ext) *ext = '\0';
-                    g_ptr_array_add(imported_names, g_strdup(name));
-                    g_free(name);
-                }
-                g_free(path);
-            }
-            g_object_unref(obj);
-        }
+        show_scan_dialog_for_files(data, files, TRUE);
         g_object_unref(files);
-        update_dict_list(data);
-        if (imported > 0) {
-            char *name_list = format_name_list(imported_names);
-            char *message = name_list[0] != '\0'
-                ? g_strdup_printf("Imported %u dictionaries: %s", imported, name_list)
-                : g_strdup_printf("Imported %u dictionaries into Diction-managed storage.", imported);
-            present_dictionary_feedback(data, 0, imported, 0, message);
-            g_free(message);
-            g_free(name_list);
-        }
-        g_ptr_array_free(imported_names, TRUE);
-        if (data->reload_callback) data->reload_callback(data->user_data);
     } else if (error) {
         g_error_free(error);
     }
