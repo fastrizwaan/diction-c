@@ -1115,6 +1115,13 @@ static void on_add_dictionary_file(GtkButton *btn, SettingsDialogData *data) {
     gtk_file_filter_add_pattern(filter, "*.ifo");
     gtk_file_filter_add_pattern(filter, "*.mdx");
     gtk_file_filter_add_pattern(filter, "*.bgl");
+    gtk_file_filter_add_pattern(filter, "*.slob");
+    gtk_file_filter_add_pattern(filter, "*.tar.bz2");
+    gtk_file_filter_add_pattern(filter, "*.tar.gz");
+    gtk_file_filter_add_pattern(filter, "*.tar.xz");
+    gtk_file_filter_add_pattern(filter, "*.tgz");
+    gtk_file_filter_add_pattern(filter, "*.xdxf");
+    gtk_file_filter_add_pattern(filter, "*.xdxf.dz");
     g_list_store_append(filters, filter);
     gtk_file_dialog_set_filters(chooser, G_LIST_MODEL(filters));
     g_object_unref(filters);
@@ -1189,6 +1196,13 @@ static void on_import_dictionary_files(GtkButton *btn, SettingsDialogData *data)
     gtk_file_filter_add_pattern(filter, "*.ifo");
     gtk_file_filter_add_pattern(filter, "*.mdx");
     gtk_file_filter_add_pattern(filter, "*.bgl");
+    gtk_file_filter_add_pattern(filter, "*.slob");
+    gtk_file_filter_add_pattern(filter, "*.tar.bz2");
+    gtk_file_filter_add_pattern(filter, "*.tar.gz");
+    gtk_file_filter_add_pattern(filter, "*.tar.xz");
+    gtk_file_filter_add_pattern(filter, "*.tgz");
+    gtk_file_filter_add_pattern(filter, "*.xdxf");
+    gtk_file_filter_add_pattern(filter, "*.xdxf.dz");
     g_list_store_append(filters, filter);
     gtk_file_dialog_set_filters(chooser, G_LIST_MODEL(filters));
     g_object_unref(filters);
