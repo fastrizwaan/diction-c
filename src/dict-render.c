@@ -2421,7 +2421,7 @@ char* dsl_render_to_html(const char *dsl_text,
         buf_append_str(&b, "</h2><div class='rendered-entry-body'>");
     }
 
-    if (format == DICT_FORMAT_MDX || format == DICT_FORMAT_STARDICT || format == DICT_FORMAT_BGL || format == DICT_FORMAT_SLOB) {
+    if (format == DICT_FORMAT_MDX || format == DICT_FORMAT_STARDICT || format == DICT_FORMAT_BGL || format == DICT_FORMAT_SLOB || format == DICT_FORMAT_XDXF) {
         gboolean treat_as_html = (format == DICT_FORMAT_MDX || format == DICT_FORMAT_STARDICT || format == DICT_FORMAT_BGL || format == DICT_FORMAT_SLOB || looks_like_html(dsl_text, length));
         gboolean treat_as_tagged_plain = (!treat_as_html && looks_like_tagged_plain_markup(dsl_text, length));
 
