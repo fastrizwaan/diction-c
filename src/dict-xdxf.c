@@ -280,9 +280,9 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
                             const char *start = ptr;
                             gboolean is_line_start = TRUE;
                             
-                            // Smart whitespace and link parser: retains authored line breaks, bullet indents and expands {links}
+                            // Smart whitespace parser: retains authored line breaks and bullet indents
                             while (*ptr) {
-                                if (*ptr == '{' || *ptr == '\n' || *ptr == '\t' || *ptr == ' ') {
+                                if (*ptr == '\n' || *ptr == '\t' || *ptr == ' ') {
                                     // Flush preceding text
                                     if (ptr > start) {
                                         char *esc = g_markup_escape_text(start, (gssize)(ptr - start));
@@ -291,22 +291,7 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
                                         is_line_start = FALSE;
                                     }
                                     
-                                    if (*ptr == '{') {
-                                        const char *end = strchr(ptr, '}');
-                                        if (end) {
-                                            char *word = g_strndup(ptr + 1, (gsize)(end - ptr - 1));
-                                            char *uri_word = g_uri_escape_string(word, NULL, TRUE);
-                                            char *markup_word = g_markup_escape_text(word, -1);
-                                            g_string_append_printf(def_str, "<a href=\"dict://%s\" class=\"xdxf-kref\">%s</a>", uri_word, markup_word);
-                                            g_free(word);
-                                            g_free(uri_word);
-                                            g_free(markup_word);
-                                            ptr = end + 1;
-                                            start = ptr;
-                                            is_line_start = FALSE;
-                                            continue;
-                                        }
-                                    } else if (*ptr == '\n') {
+                                    if (*ptr == '\n') {
                                         /* Restore line breaks for dictionary layout */
                                         g_string_append(def_str, "<br/>");
                                         is_line_start = TRUE;
