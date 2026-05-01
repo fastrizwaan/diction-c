@@ -241,6 +241,16 @@ static GtkWidget *create_startup_splash_logo(void) {
     return image;
 }
 
+/* Request cancellation of the current loader generation (called from UI). */
+void request_loader_cancel(void) {
+    g_atomic_int_inc(&loader_generation);
+    g_mutex_lock(&loader_cancel_mutex);
+    if (loader_cancellable) {
+        g_cancellable_cancel(loader_cancellable);
+    }
+    g_mutex_unlock(&loader_cancel_mutex);
+}
+
 static void ensure_startup_splash_css(void) {
     static GtkCssProvider *provider = NULL;
     if (provider) {
@@ -254,41 +264,63 @@ static void ensure_startup_splash_css(void) {
         "}"
         ".startup-shell {"
         "  margin: 18px;"
-        "  border-radius: 24px;"
-        "  padding: 22px 24px 18px 24px;"
-        "  border: 1px solid alpha(@accent_bg_color, 0.18);"
-        "  background: linear-gradient(135deg, alpha(@accent_bg_color, 0.10), alpha(@window_bg_color, 0.98));"
+        "  border-radius: 28px;"
+        "  padding: 32px 36px;"
+        "  border: 1px solid alpha(@accent_bg_color, 0.2);"
+        "  background: linear-gradient(135deg, alpha(@accent_bg_color, 0.12), @window_bg_color);"
+        "  box-shadow: 0 16px 48px rgba(0,0,0,0.22);"
         "}"
         ".startup-logo-wrap {"
-        "  min-width: 72px;"
-        "  min-height: 72px;"
-        "  border-radius: 18px;"
-        "  background: alpha(@accent_bg_color, 0.14);"
+        "  min-width: 88px;"
+        "  min-height: 88px;"
+        "  border-radius: 24px;"
+        "  background: alpha(@accent_bg_color, 0.16);"
+        "  box-shadow: inset 0 2px 4px rgba(255,255,255,0.1);"
         "}"
         ".startup-title {"
-        "  font-size: 1.55rem;"
+        "  font-size: 1.85rem;"
         "  font-weight: 800;"
-        "  letter-spacing: -0.02em;"
+        "  letter-spacing: -0.03em;"
+        "  color: @accent_color;"
         "}"
         ".startup-subtitle {"
-        "  opacity: 0.78;"
-        "  font-size: 0.96rem;"
+        "  opacity: 0.75;"
+        "  font-size: 1.0rem;"
+        "  line-height: 1.4;"
         "}"
         ".startup-meta {"
-        "  min-height: 20px;"
+        "  min-height: 24px;"
+        "  margin-top: 20px;"
         "}"
         ".startup-status {"
-        "  opacity: 0.82;"
-        "  font-size: 0.92rem;"
+        "  opacity: 0.85;"
+        "  font-size: 0.94rem;"
+        "  font-weight: 500;"
         "}"
         ".startup-count {"
-        "  opacity: 0.62;"
-        "  font-size: 0.84rem;"
+        "  opacity: 0.65;"
+        "  font-size: 0.88rem;"
         "  font-variant-numeric: tabular-nums;"
         "}"
-        ".startup-progress trough, .startup-progress progress {"
-        "  min-height: 7px;"
+        ".startup-progress trough {"
+        "  background: alpha(@accent_bg_color, 0.1);"
+        "  border: none;"
+        "}"
+        ".startup-progress progress {"
+        "  background: @accent_bg_color;"
+        "  border: none;"
+        "  min-height: 8px;"
         "  border-radius: 999px;"
+        "}"
+        ".startup-stop-btn {"
+        "  margin-left: 16px;"
+        "  padding: 8px;"
+        "  border-radius: 12px;"
+        "  transition: all 0.2s ease;"
+        "}"
+        ".startup-stop-btn:hover {"
+        "  background: alpha(@error_bg_color, 0.15);"
+        "  color: @error_color;"
         "}");
 
     gtk_style_context_add_provider_for_display(gdk_display_get_default(),
@@ -306,7 +338,7 @@ static void show_startup_splash(GtkApplication *app) {
     GtkWindow *window = GTK_WINDOW(gtk_window_new());
     gtk_window_set_application(window, app);
     gtk_window_set_title(window, "Diction");
-    gtk_window_set_default_size(window, 480, 168);
+    gtk_window_set_default_size(window, 520, 200);
     gtk_window_set_resizable(window, FALSE);
     gtk_window_set_decorated(window, FALSE);
     gtk_window_set_modal(window, FALSE);
@@ -331,14 +363,23 @@ static void show_startup_splash(GtkApplication *app) {
     gtk_box_append(GTK_BOX(header), logo_wrap);
     gtk_box_append(GTK_BOX(logo_wrap), create_startup_splash_logo());
 
-    GtkWidget *copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *copy = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     gtk_widget_set_hexpand(copy, TRUE);
+    gtk_widget_set_valign(copy, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(header), copy);
 
     GtkWidget *title = gtk_label_new("Diction");
     gtk_widget_add_css_class(title, "startup-title");
     gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
     gtk_box_append(GTK_BOX(copy), title);
+
+    GtkWidget *stop_btn = gtk_button_new_from_icon_name("media-playback-stop-symbolic");
+    gtk_widget_add_css_class(stop_btn, "flat");
+    gtk_widget_add_css_class(stop_btn, "startup-stop-btn");
+    gtk_widget_set_valign(stop_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_tooltip_text(stop_btn, "Stop and Load App");
+    g_signal_connect(stop_btn, "clicked", G_CALLBACK(request_loader_cancel), NULL);
+    gtk_box_append(GTK_BOX(header), stop_btn);
 
     GtkWidget *subtitle = gtk_label_new("A fast and lightweight dictionary application");
     gtk_widget_add_css_class(subtitle, "startup-subtitle");
@@ -2619,7 +2660,9 @@ static guint rebuild_dict_entries_from_settings(void) {
 
     if (app_settings) {
         for (guint i = 0; i < app_settings->dictionaries->len; i++) {
+            if (count >= 1000) break;
             DictConfig *cfg = g_ptr_array_index(app_settings->dictionaries, i);
+
             if (!cfg || !cfg->path || !*cfg->path) {
                 continue;
             }
@@ -4789,14 +4832,6 @@ static void reload_dictionaries_from_settings(void *user_data) {
 }
 
 /* Request cancellation of the current loader generation (called from UI). */
-void request_loader_cancel(void) {
-    g_atomic_int_inc(&loader_generation);
-    g_mutex_lock(&loader_cancel_mutex);
-    if (loader_cancellable) {
-        g_cancellable_cancel(loader_cancellable);
-    }
-    g_mutex_unlock(&loader_cancel_mutex);
-}
 
 static void finalize_dictionary_loading(gboolean allow_random_word, gboolean sync_settings_from_loaded) {
     dictionary_loading_in_progress = FALSE;
@@ -5503,6 +5538,11 @@ static gboolean on_dict_loaded_idle(gpointer user_data) {
     LoadIdleData *ld = user_data;
 
     if (ld->generation != g_atomic_int_get(&loader_generation)) {
+        if (ld->kind == LOAD_IDLE_DONE) {
+            /* Even if generation changed (due to cancellation), we MUST finalize loading 
+             * to close the splash and restore UI state. */
+            finalize_dictionary_loading(TRUE, ld->sync_settings);
+        }
         if (ld->entry) {
             dict_entry_unref(ld->entry);
         }
@@ -5766,7 +5806,7 @@ static gpointer dict_load_thread(gpointer user_data) {
         GThreadPool *pool = g_thread_pool_new(load_one_dict_worker, NULL, (gint)n_workers, FALSE, &pool_error);
 
         if (pool) {
-            for (guint i = 0; i < candidate_paths->len; i++) {
+            for (guint i = 0; i < candidate_paths->len && i < (guint)MAX_DICTS; i++) {
                 if (args->generation != g_atomic_int_get(&loader_generation)) break;
 
                 LoadOneArgs *la = g_new0(LoadOneArgs, 1);
@@ -5788,7 +5828,7 @@ static gpointer dict_load_thread(gpointer user_data) {
                         pool_error->message);
                 g_error_free(pool_error);
             }
-            for (guint i = 0; i < candidate_paths->len; i++) {
+            for (guint i = 0; i < candidate_paths->len && i < (guint)MAX_DICTS; i++) {
                 if (args->generation != g_atomic_int_get(&loader_generation)) break;
 
                 const char *path = g_ptr_array_index(candidate_paths, i);

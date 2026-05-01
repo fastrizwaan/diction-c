@@ -1024,6 +1024,44 @@ void dict_render_set_resource_reader(ResourceReader *reader) {
     tl_resource_reader = reader;
 }
 
+static char* find_file_case_insensitive(const char *dir, const char *path) {
+    if (!dir || !path) return NULL;
+    
+    char **parts = g_strsplit(path, "/", -1);
+    char *current_dir = g_strdup(dir);
+    
+    for (int i = 0; parts[i]; i++) {
+        if (!parts[i][0]) continue; /* Skip empty parts from leading/trailing/multiple slashes */
+        
+        GDir *gdir = g_dir_open(current_dir, 0, NULL);
+        if (!gdir) {
+            g_free(current_dir);
+            current_dir = NULL;
+            break;
+        }
+        
+        const char *entry;
+        char *match = NULL;
+        while ((entry = g_dir_read_name(gdir))) {
+            if (g_ascii_strcasecmp(entry, parts[i]) == 0) {
+                match = g_build_filename(current_dir, entry, NULL);
+                break;
+            }
+        }
+        g_dir_close(gdir);
+        
+        g_free(current_dir);
+        if (!match) {
+            current_dir = NULL;
+            break;
+        }
+        current_dir = match;
+    }
+    
+    g_strfreev(parts);
+    return current_dir;
+}
+
 static char *resolve_local_resource_path(const char *resource_dir, const char *source_dir, const char *value) {
     if (!value) {
         return NULL;
@@ -1039,7 +1077,13 @@ static char *resolve_local_resource_path(const char *resource_dir, const char *s
             return path;
         }
         g_free(path);
-        path = NULL;
+        
+        /* Try case-insensitive fallback in source_dir */
+        path = find_file_case_insensitive(source_dir, normalized);
+        if (path) {
+            g_free(normalized);
+            return path;
+        }
     }
 
     if (resource_dir) {
@@ -1049,7 +1093,13 @@ static char *resolve_local_resource_path(const char *resource_dir, const char *s
             return path;
         }
         g_free(path);
-        path = NULL;
+        
+        /* Try case-insensitive fallback in resource_dir */
+        path = find_file_case_insensitive(resource_dir, normalized);
+        if (path) {
+            g_free(normalized);
+            return path;
+        }
     }
 
     /* Phase 2: Try on-demand extraction from archive */

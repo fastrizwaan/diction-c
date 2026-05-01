@@ -278,6 +278,12 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
                                 g_string_append_printf(def_str, "<img class=\"xdxf-img\" src=\"%s\" />", (const char*)src);
                                 xmlFree(src);
                             }
+                        } else if (xmlStrEqual(inner_name, (const xmlChar*)"snd")) {
+                            xmlChar *src = xmlTextReaderGetAttribute(reader, (const xmlChar*)"src");
+                            if (src) {
+                                g_string_append_printf(def_str, "<a class=\"xdxf-snd\" href=\"sound://%s\">🔊</a>", (const char*)src);
+                                xmlFree(src);
+                            }
                         } else {
                             // Everything else (dtrn, ex, co, abr, tr) maps dynamically to semantic span elements
                             g_string_append_printf(def_str, "<span class=\"xdxf-%s\">", (const char*)inner_name);
@@ -448,9 +454,9 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
                 char *archive_path = NULL;
                 xdxf_load_meta(cache_path, &dict->name, &dict->source_lang, &dict->target_lang, &archive_path);
                 
-                if (archive_path && ends_with_ci(archive_path, ".zip")) {
+                if (archive_path) {
                     char *res_dir = g_strdup_printf("%s.res", cache_path);
-                    dict->resource_reader = resource_reader_open_zip(archive_path, res_dir);
+                    dict->resource_reader = resource_reader_open_archive(archive_path, res_dir);
                     dict->resource_dir = res_dir; /* Takes ownership */
                 } else {
                     char *res_dir = g_strdup_printf("%s.res", cache_path);
@@ -462,7 +468,7 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
                 }
                 g_free(archive_path);
 
-                dict->source_dir = g_path_get_dirname(path);
+                dict->source_dir = g_canonicalize_filename(g_path_get_dirname(path), NULL);
                 dict->index = flat_index_open(data, size);
                 g_free(cache_path);
                 return dict;
@@ -585,14 +591,14 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     dict->index = flat_index_open(data, size);
     
     // Set resource directory if we extracted an archive
-    if (ends_with_ci(path, ".zip")) {
-        dict->resource_reader = resource_reader_open_zip(path, res_dir);
+    if (archive_path) {
+        dict->resource_reader = resource_reader_open_archive(path, res_dir);
         dict->resource_dir = g_strdup(res_dir);
     } else if (g_file_test(res_dir, G_FILE_TEST_IS_DIR)) {
         dict->resource_dir = g_strdup(res_dir);
     }
     
-    dict->source_dir = g_path_get_dirname(path);
+    dict->source_dir = g_canonicalize_filename(g_path_get_dirname(path), NULL);
     g_free(res_dir);
 
     g_array_free(state.entries, TRUE);

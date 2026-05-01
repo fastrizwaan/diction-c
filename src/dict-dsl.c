@@ -110,7 +110,7 @@ static char *dsl_prepare_resource_dir(const char *path, ResourceReader **out_rea
     /* Phase 2: Lazy extraction — scan ZIP but don't extract.
      * Individual files will be extracted on demand by ResourceReader. */
     if (out_reader) {
-        *out_reader = resource_reader_open_zip(zip_path, resource_dir);
+        *out_reader = resource_reader_open_archive(zip_path, resource_dir);
     }
 
     g_free(zip_path);

@@ -12,6 +12,9 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+
+
+
 /* ── helpers ─────────────────────────────────────────────── */
 
 static int ends_with_ci(const char *s, const char *suffix) {
@@ -432,7 +435,9 @@ DictEntry* dict_loader_scan_directory(const char *dirpath) {
     candidates = g_list_reverse(candidates);
 
     DictEntry *head = NULL, *tail = NULL;
-    for (GList *l = candidates; l; l = l->next) {
+    int loaded_count = 0;
+    for (GList *l = candidates; l && loaded_count < MAX_DICTS; l = l->next) {
+
         DictCandidate *c = l->data;
         DictMmap *loaded = dict_load_any(c->path, c->format, NULL, 0);
         if (!loaded) {
@@ -454,7 +459,9 @@ DictEntry* dict_loader_scan_directory(const char *dirpath) {
             if (!head) head = entry;
             if (tail) tail->next = entry;
             tail = entry;
+            loaded_count++;
         }
+
         dict_candidate_free(c);
     }
     g_list_free(candidates);
@@ -492,8 +499,10 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
     }
 
     /* Phase 2: Throttled loading and indexing */
-    fprintf(stderr, "[SCANNER] Phase 2: Starting to load %d discovered files\n", discovery_count);
-    for (GList *l = candidates; l; l = l->next) {
+    int loaded_count = 0;
+    fprintf(stderr, "[SCANNER] Phase 2: Starting to load %d discovered files (Limit: %d)\n", discovery_count, MAX_DICTS);
+    for (GList *l = candidates; l && loaded_count < MAX_DICTS; l = l->next) {
+
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) break;
         DictCandidate *c = l->data;
 
@@ -520,7 +529,9 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
             if (loaded->icon_path) entry->icon_path = g_strdup(loaded->icon_path);
 
             callback(entry, DICT_LOADER_EVENT_FINISHED, user_data);
+            loaded_count++;
         } else {
+
             callback(NULL, DICT_LOADER_EVENT_FAILED, user_data);
         }
         

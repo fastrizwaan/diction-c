@@ -24,6 +24,7 @@ void dict_mmap_close(DictMmap *dict) {
         resource_reader_close(dict->resource_reader);
         if (dict->data) munmap((void*)dict->data, dict->size);
         if (dict->fd >= 0) close(dict->fd);
+        if (dict->tmp_file) fclose(dict->tmp_file);
         g_free(dict->name);
         g_free(dict->source_dir);
         g_free(dict->resource_dir);

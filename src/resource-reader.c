@@ -131,17 +131,17 @@ static void zip_close(ResourceReader *reader) {
     g_free(zip);
 }
 
-ResourceReader* resource_reader_open_zip(const char *zip_path, const char *extract_dir) {
-    if (!zip_path || !extract_dir) return NULL;
+ResourceReader* resource_reader_open_archive(const char *archive_path, const char *extract_dir) {
+    if (!archive_path || !extract_dir) return NULL;
     g_mkdir_with_parents(extract_dir, 0755);
 
     struct archive *a = archive_read_new();
-    archive_read_support_format_zip(a);
+    archive_read_support_format_all(a);
     archive_read_support_filter_all(a);
 
-    if (archive_read_open_filename(a, zip_path, 65536) != ARCHIVE_OK) {
-        fprintf(stderr, "[ResourceReader] Failed to open ZIP: %s: %s\n",
-                zip_path, archive_error_string(a));
+    if (archive_read_open_filename(a, archive_path, 65536) != ARCHIVE_OK) {
+        fprintf(stderr, "[ResourceReader] Failed to open archive: %s: %s\n",
+                archive_path, archive_error_string(a));
         archive_read_free(a);
         return NULL;
     }
@@ -167,11 +167,11 @@ ResourceReader* resource_reader_open_zip(const char *zip_path, const char *extra
     archive_read_free(a);
 
     ZipBackend *zip = g_new0(ZipBackend, 1);
-    zip->archive_path = g_strdup(zip_path);
+    zip->archive_path = g_strdup(archive_path);
     zip->entries = entries;
 
     ResourceReader *reader = resource_reader_new(extract_dir, zip, zip_get, zip_has, zip_close);
-    printf("[ResourceReader] Indexed %d entries from %s (lazy extraction)\n", count, zip_path);
+    printf("[ResourceReader] Indexed %d entries from %s (lazy extraction)\n", count, archive_path);
     return reader;
 }
 

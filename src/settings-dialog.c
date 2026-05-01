@@ -1242,7 +1242,7 @@ void show_scan_dialog_for_dirs(SettingsDialogData *data, char **dirs, int n_dirs
     gtk_widget_set_hexpand(spacer, TRUE);
     gtk_box_append(GTK_BOX(footer), spacer);
 
-    GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
+    GtkWidget *cancel_btn = gtk_button_new_with_label("Stop Scan");
     GtkWidget *close_btn = gtk_button_new_with_label("Close");
     gtk_widget_set_sensitive(close_btn, FALSE);
     gtk_widget_remove_css_class(close_btn, "suggested-action");

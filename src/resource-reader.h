@@ -17,7 +17,7 @@ typedef struct ResourceReader ResourceReader;
 /* Create a reader for a ZIP file. Scans the central directory, builds index.
  * extract_dir: directory to cache extracted files (will be created if needed).
  * Returns NULL on failure. */
-ResourceReader* resource_reader_open_zip(const char *zip_path, const char *extract_dir);
+ResourceReader* resource_reader_open_archive(const char *archive_path, const char *extract_dir);
 
 /* Extract a single resource on demand. If the file already exists in
  * extract_dir, returns immediately. Otherwise extracts from archive.

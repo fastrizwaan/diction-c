@@ -4,6 +4,8 @@
 #include "dict-mmap.h"
 #include <stddef.h>
 
+#define MAX_DICTS 1000
+
 /* Supported dictionary format types */
 typedef enum {
     DICT_FORMAT_DSL,
