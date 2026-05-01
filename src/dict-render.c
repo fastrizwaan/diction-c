@@ -2460,6 +2460,33 @@ char* dsl_render_to_html(const char *dsl_text,
             "</style>");
     }
 
+    /* MDX thesaurus expand/collapse support (Cambridge SMART Thesaurus, etc.) */
+    if (format == DICT_FORMAT_MDX) {
+        buf_append_str(&b,
+            "<style>"
+            ".mcat{margin:0.3em 0 0.5em 0;}"
+            ".expand_mcat a{cursor:pointer;font-weight:bold;text-decoration:none;}"
+            ".expand_mcat a:hover{text-decoration:underline;}"
+            ".expand_mcat a::before{content:'\u25b6\u00a0';font-size:0.75em;opacity:0.7;transition:transform 0.15s;display:inline-block;}"
+            ".expand_mcat a.open::before{content:'\u25bc\u00a0';}"
+            ".thswords{list-style:none;margin:0.2em 0 0.2em 1.2em;padding:0;}"
+            ".thswords a{text-decoration:none;}"
+            ".thswords a:hover{text-decoration:underline;}"
+            ".thssib{margin:0.3em 0 0 0.2em;font-size:0.9em;}"
+            "</style>"
+            "<script>"
+            "function cacd_openShutManager(el,id){"
+            "  if(typeof event!=='undefined'&&event&&event.preventDefault)event.preventDefault();"
+            "  var box=document.getElementById(id);"
+            "  if(!box)return false;"
+            "  var open=box.style.display!=='none'&&box.style.display!=='';"
+            "  box.style.display=open?'none':'block';"
+            "  el.classList.toggle('open',!open);"
+            "  return false;"
+            "}"
+            "</script>");
+    }
+
     if (python_style) {
         buf_append_str(&b, "<div class='rendered-entry py-entry-rendered'><div class='rendered-entry-body'>");
     } else if (diction_style) {
