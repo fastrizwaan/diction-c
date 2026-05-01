@@ -23,7 +23,7 @@ static int ends_with_ci(const char *s, const char *suffix) {
     return strcasecmp(s + sl - xl, suffix) == 0;
 }
 
-static char* extract_xdxf_from_archive(const char *archive_path, const char *target_dir) {
+static char* extract_xdxf_xml_from_archive(const char *archive_path, const char *target_dir) {
     settings_scan_progress_notify(archive_path, 5);
     struct archive *a = archive_read_new();
     struct archive_entry *entry;
@@ -46,32 +46,35 @@ static char* extract_xdxf_from_archive(const char *archive_path, const char *tar
             continue;
         }
 
-        /* Skip directories as elements; they'll be created by g_build_filename and open/mkdir if needed.
-         * But better yet, just extract files and let g_build_filename handle the path. */
         if (archive_entry_filetype(entry) == AE_IFDIR) {
             archive_read_data_skip(a);
             continue;
         }
 
-        char *extracted_path = g_build_filename(target_dir, name, NULL);
-        
-        /* Create parent directories if needed */
-        char *dirname = g_path_get_dirname(extracted_path);
-        g_mkdir_with_parents(dirname, 0755);
-        g_free(dirname);
+        /* Only extract the .xdxf or .xdxf.dz file, skip all media */
+        if (ends_with_ci(name, ".xdxf") || ends_with_ci(name, ".xdxf.dz")) {
+            char *extracted_path = g_build_filename(target_dir, name, NULL);
+            
+            /* Create parent directories if needed */
+            char *dirname = g_path_get_dirname(extracted_path);
+            g_mkdir_with_parents(dirname, 0755);
+            g_free(dirname);
 
-        /* If we found an XDXF, keep track of the first one to return it */
-        if (!first_xdxf_path && (ends_with_ci(name, ".xdxf") || ends_with_ci(name, ".xdxf.dz"))) {
             first_xdxf_path = g_strdup(extracted_path);
-        }
 
-        int fd = open(extracted_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (fd >= 0) {
-            archive_read_data_into_fd(a, fd);
-            close(fd);
-            settings_scan_progress_notify(archive_path, 15);
+            int fd = open(extracted_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd >= 0) {
+                archive_read_data_into_fd(a, fd);
+                close(fd);
+                settings_scan_progress_notify(archive_path, 15);
+            }
+            g_free(extracted_path);
+            
+            /* Stop reading the archive once we've found and extracted the XDXF file */
+            break;
+        } else {
+            archive_read_data_skip(a);
         }
-        g_free(extracted_path);
     }
 
     archive_read_close(a);
@@ -272,13 +275,7 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
                         } else if (xmlStrEqual(inner_name, (const xmlChar*)"img")) {
                             xmlChar *src = xmlTextReaderGetAttribute(reader, (const xmlChar*)"src");
                             if (src) {
-                                if (state->resource_dir) {
-                                    char *full_path = g_build_filename(state->resource_dir, (const char*)src, NULL);
-                                    g_string_append_printf(def_str, "<img class=\"xdxf-img\" src=\"file://%s\" />", full_path);
-                                    g_free(full_path);
-                                } else {
-                                    g_string_append_printf(def_str, "<img class=\"xdxf-img\" src=\"%s\" />", (const char*)src);
-                                }
+                                g_string_append_printf(def_str, "<img class=\"xdxf-img\" src=\"%s\" />", (const char*)src);
                                 xmlFree(src);
                             }
                         } else {
@@ -405,11 +402,12 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
     }
     settings_scan_progress_notify(path, 95);
 }
-static void xdxf_save_meta(const char *cache_path, const char *name, const char *slang, const char *tlang) {
+static void xdxf_save_meta(const char *cache_path, const char *name, const char *slang, const char *tlang, const char *archive_path) {
     GKeyFile *kf = g_key_file_new();
     if (name) g_key_file_set_string(kf, "Metadata", "Name", name);
     if (slang) g_key_file_set_string(kf, "Metadata", "SourceLang", slang);
     if (tlang) g_key_file_set_string(kf, "Metadata", "TargetLang", tlang);
+    if (archive_path) g_key_file_set_string(kf, "Metadata", "Archive", archive_path);
     
     char *meta_path = g_strdup_printf("%s.meta", cache_path);
     g_key_file_save_to_file(kf, meta_path, NULL);
@@ -417,13 +415,14 @@ static void xdxf_save_meta(const char *cache_path, const char *name, const char 
     g_key_file_free(kf);
 }
 
-static void xdxf_load_meta(const char *cache_path, char **name, char **slang, char **tlang) {
+static void xdxf_load_meta(const char *cache_path, char **name, char **slang, char **tlang, char **archive_path) {
     char *meta_path = g_strdup_printf("%s.meta", cache_path);
     GKeyFile *kf = g_key_file_new();
     if (g_key_file_load_from_file(kf, meta_path, G_KEY_FILE_NONE, NULL)) {
         *name = g_key_file_get_string(kf, "Metadata", "Name", NULL);
         *slang = g_key_file_get_string(kf, "Metadata", "SourceLang", NULL);
         *tlang = g_key_file_get_string(kf, "Metadata", "TargetLang", NULL);
+        *archive_path = g_key_file_get_string(kf, "Metadata", "Archive", NULL);
     }
     g_key_file_free(kf);
     g_free(meta_path);
@@ -446,7 +445,24 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
                 dict->fd = fd;
                 dict->data = data;
                 dict->size = size;
-                xdxf_load_meta(cache_path, &dict->name, &dict->source_lang, &dict->target_lang);
+                char *archive_path = NULL;
+                xdxf_load_meta(cache_path, &dict->name, &dict->source_lang, &dict->target_lang, &archive_path);
+                
+                if (archive_path && ends_with_ci(archive_path, ".zip")) {
+                    char *res_dir = g_strdup_printf("%s.res", cache_path);
+                    dict->resource_reader = resource_reader_open_zip(archive_path, res_dir);
+                    dict->resource_dir = res_dir; /* Takes ownership */
+                } else {
+                    char *res_dir = g_strdup_printf("%s.res", cache_path);
+                    if (g_file_test(res_dir, G_FILE_TEST_IS_DIR)) {
+                        dict->resource_dir = res_dir;
+                    } else {
+                        g_free(res_dir);
+                    }
+                }
+                g_free(archive_path);
+
+                dict->source_dir = g_path_get_dirname(path);
                 dict->index = flat_index_open(data, size);
                 g_free(cache_path);
                 return dict;
@@ -459,8 +475,8 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     char *res_dir = g_strdup_printf("%s.res", cache_path);
     char *xml_path = NULL;
 
-    if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz")) {
-        xml_path = extract_xdxf_from_archive(path, res_dir);
+    if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz") || ends_with_ci(path, ".zip")) {
+        xml_path = extract_xdxf_xml_from_archive(path, res_dir);
     } else if (ends_with_ci(path, ".xdxf.dz")) {
         /* Decompress into res_dir to keep it persistent if needed, or just temp */
         g_mkdir_with_parents(res_dir, 0755);
@@ -542,7 +558,11 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     }
     fclose(cache_file);
 
-    xdxf_save_meta(cache_path, state.dict_name, state.source_lang, state.target_lang);
+    const char *archive_path = NULL;
+    if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz") || ends_with_ci(path, ".zip")) {
+        archive_path = path;
+    }
+    xdxf_save_meta(cache_path, state.dict_name, state.source_lang, state.target_lang, archive_path);
 
     // Sync mtime
     const char *sources[] = {path};
@@ -565,9 +585,14 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     dict->index = flat_index_open(data, size);
     
     // Set resource directory if we extracted an archive
-    if (g_file_test(res_dir, G_FILE_TEST_IS_DIR)) {
+    if (ends_with_ci(path, ".zip")) {
+        dict->resource_reader = resource_reader_open_zip(path, res_dir);
+        dict->resource_dir = g_strdup(res_dir);
+    } else if (g_file_test(res_dir, G_FILE_TEST_IS_DIR)) {
         dict->resource_dir = g_strdup(res_dir);
     }
+    
+    dict->source_dir = g_path_get_dirname(path);
     g_free(res_dir);
 
     g_array_free(state.entries, TRUE);

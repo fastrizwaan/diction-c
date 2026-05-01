@@ -525,17 +525,14 @@ void dict_loader_scan_directory_streaming(const char *dirpath, DictLoaderCallbac
         }
         
         dict_candidate_free(c);
+        l->data = NULL; /* Mark as freed to avoid double-free below */
     }
 
-    /* Clean up any leftovers if canceled */
+    /* Free remaining unprocessed candidates (from early cancellation break) */
     for (GList *l = candidates; l; l = l->next) {
-         /* If we broke out early, some candidates might still be in the list */
-         /* But wait, g_list_free_full handles this if we use it. 
-          * Actually the loop above frees processed ones. */
+        if (l->data) dict_candidate_free(l->data);
     }
-    
-    /* Clear the list pointers, we need to free any remaining candidates if we broke early */
-    g_list_free_full(candidates, (GDestroyNotify)dict_candidate_free);
+    g_list_free(candidates);
 
     callback(NULL, DICT_LOADER_EVENT_FINISHED, user_data);
 }

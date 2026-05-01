@@ -5231,6 +5231,8 @@ static void collect_dictionary_candidate_paths_with_find(const char *dirpath,
     g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.tar.xz"));
     g_ptr_array_add(argv_array, g_strdup("-o"));
     g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.tgz"));
+    g_ptr_array_add(argv_array, g_strdup("-o"));
+    g_ptr_array_add(argv_array, g_strdup("-iname")); g_ptr_array_add(argv_array, g_strdup("*.zip"));
     g_ptr_array_add(argv_array, g_strdup(")"));
     g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/node_modules/*"));
     g_ptr_array_add(argv_array, g_strdup("-not")); g_ptr_array_add(argv_array, g_strdup("-path")); g_ptr_array_add(argv_array, g_strdup("*/.git/*"));
@@ -6838,7 +6840,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         startup_random_word_pending = (!search_entry ||
                                        strlen(gtk_editable_get_text(GTK_EDITABLE(search_entry))) == 0);
         if (start_async_dict_loading(discover_from_dirs)) {
-            if (had_cached_entries) {
+            if (had_cached_entries && !discover_from_dirs) {
                 gtk_window_present(GTK_WINDOW(window));
             } else {
                 show_startup_splash(app);

@@ -28,6 +28,7 @@ srcs = [
   'src/dict-cache.c',
   'src/resource-reader.c',
   'src/dict-mmap.c',
+  'src/dict-dsl.c',
   'src/dict-loader.c',
   'src/dict-mdx.c',
   'src/dict-slob.c',

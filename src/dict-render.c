@@ -1436,11 +1436,13 @@ static char* process_html_tag_attribute(const char *tag, const char *attr_name, 
             new_value = g_strdup_printf("dict://%s", escaped);
             g_free(escaped);
         } else if (g_str_has_prefix(value, "sound://")) {
-            if (resource_dir) {
+            if (resource_dir || source_dir) {
                 new_value = build_sound_uri(resource_dir, source_dir, value + 8);
             } else {
                 new_value = g_strdup(value);
             }
+        } else if (strcmp(attr_name, "href") == 0 && media_is_audio_file(value)) {
+            new_value = build_sound_uri(resource_dir, source_dir, value);
         } else if (strstr(value, "://") || value[0] == '#' || g_str_has_prefix(value, "data:")) {
             new_value = g_strdup(value);
         } else if (strcmp(attr_name, "href") == 0 && 

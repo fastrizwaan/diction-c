@@ -261,10 +261,34 @@ static void remove_cache_artifacts_for_path(const char *path) {
 
     char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, path, -1);
     const char *cache_base = g_get_user_cache_dir();
-    char *cache_path = g_build_filename(cache_base, "diction", "dicts", hash, NULL);
+    /* Use the correct versioned cache subdirectory (dicts-v8) */
+    char *cache_path = g_build_filename(cache_base, "diction", "dicts-v8", hash, NULL);
     char *resource_dir = g_build_filename(cache_base, "diction", "resources", hash, NULL);
     remove_path_recursive(cache_path);
     remove_path_recursive(resource_dir);
+
+    /* Clean up XDXF-specific cache artifacts */
+    char *xdxf_res = g_strdup_printf("%s.res", cache_path);
+    char *xdxf_meta = g_strdup_printf("%s.meta", cache_path);
+    char *cache_tmp = g_strdup_printf("%s.tmp", cache_path);
+    remove_path_recursive(xdxf_res);
+    remove_path_recursive(xdxf_meta);
+    remove_path_recursive(cache_tmp);
+    g_free(xdxf_res);
+    g_free(xdxf_meta);
+    g_free(cache_tmp);
+
+    /* Also clean up icon cache entries */
+    char *icon_hash = g_compute_checksum_for_string(G_CHECKSUM_SHA1, path, -1);
+    char *icon_path = g_build_filename(cache_base, "diction", "icons", icon_hash, NULL);
+    char *icon_png = g_strdup_printf("%s.png", icon_path);
+    if (g_file_test(icon_png, G_FILE_TEST_EXISTS)) {
+        g_unlink(icon_png);
+    }
+    g_free(icon_png);
+    g_free(icon_path);
+    g_free(icon_hash);
+
     g_free(cache_path);
     g_free(resource_dir);
     g_free(hash);
