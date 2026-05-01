@@ -1502,6 +1502,11 @@ static char* process_html_tag_attribute(const char *tag, const char *attr_name, 
             }
         } else if (strcmp(attr_name, "href") == 0 && media_is_audio_file(value)) {
             new_value = build_sound_uri(resource_dir, source_dir, value);
+        } else if (strcmp(attr_name, "href") == 0 && value[0] == '#' &&
+                   strspn(value, "#") == strlen(value)) {
+            /* href="###" and similar pure-hash onclick hooks: use javascript:void(0)
+               so the link never accumulates :visited state and buttons stay themed */
+            new_value = g_strdup("javascript:void(0)");
         } else if (strstr(value, "://") || value[0] == '#' || g_str_has_prefix(value, "data:")) {
             new_value = g_strdup(value);
         } else if (strcmp(attr_name, "href") == 0 && 
