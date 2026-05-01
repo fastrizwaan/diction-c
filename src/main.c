@@ -3615,7 +3615,7 @@ static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res
         char link_target[1024];
         const char *lp = def_ptr + 8;
         size_t l = 0;
-        while (l < sizeof(link_target) - 1 && l < (def_len - 8) && lp[l] != '\r' && lp[l] != '\n') {
+        while (l < sizeof(link_target) - 1 && l < (def_len - 8) && lp[l] != '\r' && lp[l] != '\n' && lp[l] != '\0') {
             link_target[l] = lp[l];
             l++;
         }
@@ -3628,6 +3628,16 @@ static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res
                 def_ptr = entry->dict->data + red_res->d_off;
                 def_len = red_res->d_len;
             }
+        } else {
+            /* Redirect target not found — render a clickable link instead of raw text */
+            char *escaped_target = g_markup_escape_text(link_target, -1);
+            char *uri_target = g_uri_escape_string(link_target, NULL, FALSE);
+            char *redirect_html = g_strdup_printf(
+                "<p style='margin:0.5em 0;'>&#8594; <a href='dict://%s'>%s</a></p>",
+                uri_target, escaped_target);
+            g_free(escaped_target);
+            g_free(uri_target);
+            return redirect_html;
         }
     }
 
