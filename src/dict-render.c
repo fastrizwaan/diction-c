@@ -2545,8 +2545,15 @@ char* dsl_render_to_html(const char *dsl_text,
         buf_append_str(&b, ".ywp{cursor:pointer;width:1em;height:1em;opacity:0.7;"
             "display:inline-block;user-select:none;flex-shrink:0;margin-left:0.4em;}");
         buf_append_str(&b, ".ywp:hover{opacity:1;}");
-        buf_append_str(&b, ".eol{overflow:hidden;transition:max-height 0.2s ease;max-height:600px;}");
+        buf_append_str(&b, ".eol{overflow:hidden;}");
         buf_append_str(&b, ".eol.collapsed{display:none;}");
+        /* Quotations/examples dropdown (.ypu) triggered by .gph img */
+        buf_append_str(&b, ".gph{cursor:pointer;opacity:0.75;vertical-align:middle;margin-left:0.3em;}");
+        buf_append_str(&b, ".gph:hover{opacity:1;}");
+        buf_append_str(&b, ".ypu{display:none;margin:0.4em 0 0.2em 0.5em;}");
+        buf_append_str(&b, ".iqz{margin:0.3em 0;font-size:0.9em;border-left:2px solid ");
+        buf_append_str(&b, border_color);
+        buf_append_str(&b, ";padding-left:0.5em;}");
 
         buf_append_str(&b, "</style>");
 
@@ -2561,17 +2568,29 @@ char* dsl_render_to_html(const char *dsl_text,
             "  el.classList.toggle('open',!open);"
             "  return false;"
             "}"
-            /* kyw.s() — Wiktionary etymology section toggle */
+            /* kyw — Wiktionary toggle handlers */
             "var kyw={"
+            /* kyw.s(img): toggle next-sibling section (Etymology .eol) */
             "  s:function(img){"
             "    if(typeof event!=='undefined'&&event&&event.preventDefault)event.preventDefault();"
             "    var h=img.parentElement;"
             "    var box=h?h.nextElementSibling:null;"
-            "    while(box&&box.tagName==='SCRIPT')box=box.nextElementSibling;"
+            "    while(box&&box.nodeType===1&&(box.tagName==='SCRIPT'||box.tagName==='BR'))box=box.nextElementSibling;"
+            "    if(!box||box.nodeType!==1)return false;"
+            "    var open=box.style.display!=='none';"
+            "    box.style.display=open?'none':'';"
+            "    img.style.transform=open?'rotate(180deg)':'';"
+            "    return false;"
+            "  },"
+            /* kyw.q(img): toggle immediately-following sibling div (quotations .ypu) */
+            "  q:function(img){"
+            "    if(typeof event!=='undefined'&&event&&event.preventDefault)event.preventDefault();"
+            "    var box=img.nextSibling;"
+            "    while(box&&box.nodeType!==1)box=box.nextSibling;"
             "    if(!box)return false;"
-            "    var open=!box.classList.contains('collapsed')&&box.style.display!=='none'&&box.style.display!=='';"
-            "    if(open){box.classList.add('collapsed');box.style.display='none';img.style.transform='rotate(180deg)';}"
-            "    else{box.classList.remove('collapsed');box.style.display='';img.style.transform='';}"
+            "    var open=box.style.display!=='none'&&box.style.display!=='';"
+            "    box.style.display=open?'none':'block';"
+            "    img.classList.toggle('open',!open);"
             "    return false;"
             "  }"
             "};"

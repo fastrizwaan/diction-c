@@ -3172,6 +3172,19 @@ static gboolean is_media_url(const char *uri) {
 
 static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPolicyDecisionType t, gpointer user_data) {
     (void)v;
+    /* target="_new"/"_blank" links fire NEW_WINDOW_ACTION — open them externally */
+    if (t == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
+        WebKitNavigationPolicyDecision *nd = WEBKIT_NAVIGATION_POLICY_DECISION(d);
+        WebKitNavigationAction *na = webkit_navigation_policy_decision_get_navigation_action(nd);
+        WebKitURIRequest *req = webkit_navigation_action_get_request(na);
+        const char *uri = webkit_uri_request_get_uri(req);
+        if (uri && (g_str_has_prefix(uri, "http://") || g_str_has_prefix(uri, "https://"))) {
+            fprintf(stderr, "[EXTERNAL NEW WINDOW]: '%s'\n", uri);
+            g_app_info_launch_default_for_uri(uri, NULL, NULL);
+        }
+        webkit_policy_decision_ignore(d);
+        return;
+    }
     if (t == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
         WebKitNavigationPolicyDecision *nd = WEBKIT_NAVIGATION_POLICY_DECISION(d);
         WebKitNavigationAction *na = webkit_navigation_policy_decision_get_navigation_action(nd);
