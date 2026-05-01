@@ -2263,6 +2263,14 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, link_color);
     buf_append_str(&b, " !important;text-decoration:none;cursor:pointer;}");
     buf_append_str(&b, "a:hover, .dict-link:hover, kref:hover, ref:hover, .xdxf-kref:hover{text-decoration:underline !important;}");
+    /* Normalize h1/h2/h3 sizes — MDX dicts often put headwords in h1 which browsers render huge */
+    buf_append_str(&b, "h1{font-size:1.15em;font-weight:bold;margin:0.25em 0 0.15em 0;line-height:1.3;}");
+    buf_append_str(&b, "h2{font-size:1.05em;font-weight:bold;margin:0.2em 0 0.1em 0;}");
+    buf_append_str(&b, "h3{font-size:1.0em;font-weight:bold;margin:0.2em 0 0.1em 0;}");
+    /* Wiktionary-style .fvr 'or X / or Y' alternative word list inside h1 */
+    buf_append_str(&b, ".fvr{display:block;font-size:0.88em;font-weight:normal;margin:0.1em 0;padding:0;}");
+    buf_append_str(&b, ".fvr li{display:block;list-style:none;margin:0;padding:0;}");
+    buf_append_str(&b, ".fvr li::before{content:'or\00a0';font-style:italic;opacity:0.75;}");
     buf_append_str(&b, ".dsl-media-image{display:block;max-width:100%;height:auto;margin:0.35em 0;}");
     buf_append_str(&b, ".trn, .sense{color:");
     buf_append_str(&b, trn_color);
@@ -2530,6 +2538,16 @@ char* dsl_render_to_html(const char *dsl_text,
         buf_append_printf(&b, ".thssib,.thssib a,.thssib a:link,.thssib a:visited{color:%s !important;}", link_color);
         buf_append_str(&b, ".thssib{margin:0.3em 0 0 0.2em;font-size:0.9em;}");
 
+        /* ── Wiktionary-style etymology toggle (.eol / .ywp / kyw.s()) ────────── */
+        /* .t9d is the h3 header row; .ywp is the toggle img; .eol is the content div */
+        buf_append_printf(&b, ".t9d{display:flex;align-items:center;justify-content:space-between;"
+            "border-bottom:1px solid %s;padding:0.1em 0;margin:0.4em 0 0.2em 0;cursor:default;}", border_color);
+        buf_append_str(&b, ".ywp{cursor:pointer;width:1em;height:1em;opacity:0.7;"
+            "display:inline-block;user-select:none;flex-shrink:0;margin-left:0.4em;}");
+        buf_append_str(&b, ".ywp:hover{opacity:1;}");
+        buf_append_str(&b, ".eol{overflow:hidden;transition:max-height 0.2s ease;max-height:600px;}");
+        buf_append_str(&b, ".eol.collapsed{display:none;}");
+
         buf_append_str(&b, "</style>");
 
         buf_append_str(&b,
@@ -2543,6 +2561,20 @@ char* dsl_render_to_html(const char *dsl_text,
             "  el.classList.toggle('open',!open);"
             "  return false;"
             "}"
+            /* kyw.s() — Wiktionary etymology section toggle */
+            "var kyw={"
+            "  s:function(img){"
+            "    if(typeof event!=='undefined'&&event&&event.preventDefault)event.preventDefault();"
+            "    var h=img.parentElement;"
+            "    var box=h?h.nextElementSibling:null;"
+            "    while(box&&box.tagName==='SCRIPT')box=box.nextElementSibling;"
+            "    if(!box)return false;"
+            "    var open=!box.classList.contains('collapsed')&&box.style.display!=='none'&&box.style.display!=='';"
+            "    if(open){box.classList.add('collapsed');box.style.display='none';img.style.transform='rotate(180deg)';}"
+            "    else{box.classList.remove('collapsed');box.style.display='';img.style.transform='';}"
+            "    return false;"
+            "  }"
+            "};"
             "</script>");
     }
 

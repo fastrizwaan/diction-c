@@ -3234,6 +3234,12 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
             play_audio_file(uri);
             webkit_policy_decision_ignore(d);
             return;
+        } else if (g_str_has_prefix(uri, "http://") || g_str_has_prefix(uri, "https://")) {
+            /* Open external web links in the default browser, not inside the dict WebView */
+            fprintf(stderr, "[EXTERNAL URL]: '%s'\n", uri);
+            g_app_info_launch_default_for_uri(uri, NULL, NULL);
+            webkit_policy_decision_ignore(d);
+            return;
         }
     }
     webkit_policy_decision_use(d);
