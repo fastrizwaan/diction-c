@@ -2934,6 +2934,24 @@ static gboolean dict_entry_visible_in_sidebar(DictEntry *entry) {
     return entry->has_matches;
 }
 
+static gboolean is_media_url(const char *uri) {
+    if (!uri) return FALSE;
+    char *lower = g_ascii_strdown(uri, -1);
+    char *qmark = strchr(lower, '?');
+    if (qmark) *qmark = '\0';
+    gboolean is_media = g_str_has_suffix(lower, ".mp3") ||
+                        g_str_has_suffix(lower, ".wav") ||
+                        g_str_has_suffix(lower, ".ogg") ||
+                        g_str_has_suffix(lower, ".oga") ||
+                        g_str_has_suffix(lower, ".spx") ||
+                        g_str_has_suffix(lower, ".flac") ||
+                        g_str_has_suffix(lower, ".m4a") ||
+                        g_str_has_suffix(lower, ".aac") ||
+                        g_str_has_suffix(lower, ".wma");
+    g_free(lower);
+    return is_media;
+}
+
 static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPolicyDecisionType t, gpointer user_data) {
     (void)v;
     if (t == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION) {
@@ -2947,6 +2965,8 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
             g_free(unescaped);
         } else if (g_str_has_prefix(uri, "sound://")) {
             /* Keep existing audio logic or omit logging if not requested */
+        } else if (is_media_url(uri) && (g_str_has_prefix(uri, "http://") || g_str_has_prefix(uri, "https://"))) {
+            fprintf(stderr, "[MEDIA URL CLICKED]: '%s'\n", uri);
         } else if (g_strcmp0(uri, "file:///") != 0) {
             fprintf(stderr, "[LINK CLICKED]: '%s'\n", uri);
         }
@@ -2987,6 +3007,10 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
                 }
             }
             
+            webkit_policy_decision_ignore(d);
+            return;
+        } else if (is_media_url(uri) && (g_str_has_prefix(uri, "http://") || g_str_has_prefix(uri, "https://"))) {
+            play_audio_file(uri);
             webkit_policy_decision_ignore(d);
             return;
         }
