@@ -1539,7 +1539,10 @@ static char* process_html_tag_attribute(const char *tag, const char *attr_name, 
 }
 
 static char *process_html_common_attributes(const char *tag, const char *resource_dir, const char *source_dir, gboolean dark_mode) {
-    char *processed = process_html_tag_attribute(tag, "style", resource_dir, source_dir, dark_mode);
+    /* Strip 'target' attributes to ensure all links follow standard navigation policy */
+    char *no_target = remove_html_attribute(tag, "target");
+    char *processed = process_html_tag_attribute(no_target, "style", resource_dir, source_dir, dark_mode);
+    g_free(no_target);
     char *updated = process_html_tag_attribute(processed, "poster", resource_dir, source_dir, dark_mode);
     g_free(processed);
     processed = process_html_tag_attribute(updated, "color", resource_dir, source_dir, dark_mode);
@@ -2570,6 +2573,26 @@ char* dsl_render_to_html(const char *dsl_text,
         buf_append_str(&b, ".iqz{margin:0.3em 0;font-size:0.9em;border-left:2px solid ");
         buf_append_str(&b, border_color);
         buf_append_str(&b, ";padding-left:0.5em;}");
+
+        /* ── Wiktionary image float (.ymp) ─── matches MDict reference border-box style */
+        buf_append_printf(&b,
+            ".ymp{display:inline-block;border:1px solid %s;padding:3px;"
+            "margin:0.4em 0.8em 0.4em 0;background:%s;vertical-align:top;"
+            "text-align:center;border-radius:2px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}",
+            border_color, bg_color);
+        buf_append_str(&b, ".ymp img{display:block;max-width:100%;height:auto;margin:0 auto;}");
+        buf_append_printf(&b,
+            ".gdi{font-size:0.82em;text-align:center;margin:4px 0 2px 0;"
+            "color:%s;font-style:italic;}",
+            com_color);
+        /* .bra = image hyperlink — don't underline on hover, keep cursor pointer */
+        buf_append_str(&b, "a.bra{display:inline-block;line-height:0;cursor:pointer;}");
+        buf_append_str(&b, "a.bra:hover{opacity:0.88;}");
+
+        /* ── See also / Further reading list sections (.msm, .bkm) ── */
+        buf_append_str(&b, ".msm,.bkm{margin:0.3em 0 0.5em 0.5em;padding:0;}");
+        buf_append_str(&b, ".msm li,.bkm li{list-style:none;margin:0.15em 0;}");
+        buf_append_printf(&b, ".ulm,.zwb{color:%s !important;}", link_color);
 
         buf_append_str(&b, "</style>");
 
