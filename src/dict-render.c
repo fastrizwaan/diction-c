@@ -2252,7 +2252,7 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, body_color);
     buf_append_str(&b, ";background:");
     buf_append_str(&b, bg_color);
-    buf_append_str(&b, ";margin:0;padding:8px;}"
+    buf_append_str(&b, ";margin:0;padding:8px 20px 8px 8px;}"
         "img{max-width:100%;height:auto;vertical-align:middle;}"
         ".dict-audio{display:inline-block;line-height:0;}"
         ".dict-audio img{cursor:pointer;}"
@@ -2263,11 +2263,14 @@ char* dsl_render_to_html(const char *dsl_text,
     buf_append_str(&b, link_color);
     buf_append_str(&b, " !important;text-decoration:none;cursor:pointer;}");
     buf_append_str(&b, "a:hover, .dict-link:hover, kref:hover, ref:hover, .xdxf-kref:hover{text-decoration:underline !important;}");
-    /* Normalize h1/h2/h3 sizes — MDX dicts often put headwords in h1 which browsers render huge */
-    buf_append_str(&b, "h1{font-size:1.15em;font-weight:bold;margin:0.25em 0 0.15em 0;line-height:1.3;}");
-    buf_append_str(&b, "h2{font-size:1.05em;font-weight:bold;margin:0.2em 0 0.1em 0;}");
-    buf_append_str(&b, "h3{font-size:1.0em;font-weight:bold;margin:0.2em 0 0.1em 0;}");
-    /* Wiktionary-style .fvr 'or X / or Y' alternative word list inside h1 */
+    /* Normalize h1/h2/h3 sizes inside entry bodies — MDX dicts often use h1 for headwords */
+    buf_append_str(&b, ".rendered-entry-body h1,.rendered-entry h1,.wic h1"
+        "{font-size:1.15em;font-weight:bold;margin:0.25em 0 0.15em 0;line-height:1.3;}");
+    buf_append_str(&b, ".rendered-entry-body h2,.rendered-entry h2,.wic h2"
+        "{font-size:1.05em;font-weight:bold;margin:0.2em 0 0.1em 0;}");
+    buf_append_str(&b, ".rendered-entry-body h3,.rendered-entry h3,.wic h3"
+        "{font-size:1.0em;font-weight:bold;margin:0.2em 0 0.1em 0;}");
+    /* Wiktionary .fvr 'or X / or Y' alternative word list */
     buf_append_str(&b, ".fvr{display:block;font-size:0.88em;font-weight:normal;margin:0.1em 0;padding:0;}");
     buf_append_str(&b, ".fvr li{display:block;list-style:none;margin:0;padding:0;}");
     buf_append_str(&b, ".fvr li::before{content:'or\00a0';font-style:italic;opacity:0.75;}");
@@ -2547,9 +2550,22 @@ char* dsl_render_to_html(const char *dsl_text,
         buf_append_str(&b, ".ywp:hover{opacity:1;}");
         buf_append_str(&b, ".eol{overflow:hidden;}");
         buf_append_str(&b, ".eol.collapsed{display:none;}");
-        /* Quotations/examples dropdown (.ypu) triggered by .gph img */
-        buf_append_str(&b, ".gph{cursor:pointer;opacity:0.75;vertical-align:middle;margin-left:0.3em;}");
-        buf_append_str(&b, ".gph:hover{opacity:1;}");
+        /* Replace broken c.png/q.png with CSS-drawn SVG arrows (WebKit supports
+           CSS 'content' override on img elements to replace broken/missing images) */
+        buf_append_printf(&b,
+            "img.ywp{content:url(\"data:image/svg+xml,"
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+            "<path d='M3 6L8 11L13 6' stroke='%s' stroke-width='2' fill='none' stroke-linecap='round'/>"
+            "</svg>\");width:14px;height:14px;cursor:pointer;opacity:0.8;flex-shrink:0;}",
+            link_color);
+        buf_append_str(&b, "img.ywp:hover{opacity:1;}");
+        buf_append_printf(&b,
+            "img.gph{content:url(\"data:image/svg+xml,"
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
+            "<path d='M3 6L8 11L13 6' stroke='%s' stroke-width='2' fill='none' stroke-linecap='round'/>"
+            "</svg>\");width:12px;height:12px;cursor:pointer;opacity:0.75;vertical-align:middle;margin-left:0.25em;}",
+            link_color);
+        buf_append_str(&b, "img.gph:hover{opacity:1;}");
         buf_append_str(&b, ".ypu{display:none;margin:0.4em 0 0.2em 0.5em;}");
         buf_append_str(&b, ".iqz{margin:0.3em 0;font-size:0.9em;border-left:2px solid ");
         buf_append_str(&b, border_color);
