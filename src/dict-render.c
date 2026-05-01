@@ -2443,7 +2443,7 @@ char* dsl_render_to_html(const char *dsl_text,
             return finalize_placeholder_dict_links(b.str);
         }
 
-        if (treat_as_html) {
+        if (treat_as_html || format == DICT_FORMAT_XDXF) {
             /* Comprehensive HTML attribute rewriting for MDX */
             size_t head = 0;
             while (head < length) {
@@ -2612,7 +2612,7 @@ char* dsl_render_to_html(const char *dsl_text,
             }
         }
 
-        if (treat_as_html) {
+        if (treat_as_html || format == DICT_FORMAT_XDXF) {
             buf_append_str(&b, "</div></div>");
             g_free(normalized_plain_text);
             g_free(styled_text);

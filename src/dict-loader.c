@@ -82,6 +82,7 @@ static int is_xdxf_archive(const char *path, char *out_xdxf, size_t out_sz) {
     int found = 0;
 
     archive_read_support_format_tar(a);
+    archive_read_support_format_zip(a);
     archive_read_support_filter_bzip2(a);
     archive_read_support_filter_gzip(a);
     archive_read_support_filter_xz(a);
@@ -122,17 +123,8 @@ DictFormat dict_detect_format(const char *path) {
         return DICT_FORMAT_SLOB;
     if (ends_with_ci(path, ".xdxf") || ends_with_ci(path, ".xdxf.dz"))
         return DICT_FORMAT_XDXF;
-    if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz")) {
-        /* Optimization: Check if we already have a cache for this archive */
-        char *cache_path = dict_cache_path_for(path);
-        if (dict_cache_is_valid(cache_path, path)) {
-            g_free(cache_path);
-            return DICT_FORMAT_XDXF;
-        }
-        g_free(cache_path);
-
-        if (is_xdxf_archive(path, NULL, 0))
-            return DICT_FORMAT_XDXF;
+    if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz") || ends_with_ci(path, ".zip")) {
+        return DICT_FORMAT_XDXF;
     }
     return DICT_FORMAT_UNKNOWN;
 }
@@ -293,7 +285,7 @@ static void scan_recursive(const char *dirpath,
                            volatile gint *cancel_flag,
                            gint expected_generation,
                            int depth) {
-    if (depth > 5) return;
+    if (depth > 10) return;
     if (cancel_flag && g_atomic_int_get(cancel_flag) != expected_generation) return;
 
     GDir *dir = g_dir_open(dirpath, 0, NULL);
@@ -356,20 +348,11 @@ static void discover_with_find(const char *dirpath, GList **candidates_out, vola
     if (dirpath[0] == '~') {
         expanded = g_build_filename(g_get_home_dir(), dirpath + 1, NULL);
     } else {
-        expanded = g_strdup(dirpath);
+        expanded = g_canonicalize_filename(dirpath, NULL);
     }
 
     char *quoted_dir = g_shell_quote(expanded);
-    char *cmd = g_strdup_printf(
-        "find %s -maxdepth 5 -type f \\( "
-        "-iname \"*.mdx\" -o -iname \"*.dsl\" -o -iname \"*.dsl.dz\" -o "
-        "-iname \"*.ifo\" -o -iname \"*.bgl\" -o -iname \"*.slob\" -o "
-        "-iname \"*.xdxf\" -o -iname \"*.xdxf.dz\" -o "
-        "-iname \"*.tar.bz2\" -o -iname \"*.tar.gz\" -o -iname \"*.tar.xz\" -o -iname \"*.tgz\" \\) "
-        "-not -path \"*/node_modules/*\" -not -path \"*/.git/*\" "
-        "-not -path \"*/build/*\" -not -path \"*/dist/*\" "
-        "-not -path \"*/__pycache__/*\" 2>/dev/null",
-        quoted_dir);
+    char *cmd = g_strdup_printf("find %s -maxdepth 10 -type f", quoted_dir);
 
     gchar **argv = NULL;
     g_shell_parse_argv(cmd, NULL, &argv, NULL);
@@ -406,6 +389,7 @@ static void discover_with_find(const char *dirpath, GList **candidates_out, vola
         }
 
         DictFormat fmt = dict_detect_format(line);
+        fprintf(stderr, "[LOADER] Found file: %s (format=%d)\n", line, fmt);
         if (fmt == DICT_FORMAT_UNKNOWN) {
             g_free(line);
             continue;

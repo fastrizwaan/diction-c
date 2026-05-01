@@ -2987,13 +2987,16 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
                 fprintf(stderr, "[AUDIO CLICKED] Clicked: %s\n", sound_file);
                 
                 /* Backward-compatible fallback and lazy loading */
-                if (active_entry && active_entry->dict && active_entry->dict->resource_dir) {
+                if (active_entry && active_entry->dict) {
                     char *audio_path = NULL;
                     if (active_entry->dict->resource_reader) {
                         audio_path = resource_reader_get(active_entry->dict->resource_reader, sound_file);
                     }
-                    if (!audio_path) {
+                    if (!audio_path && active_entry->dict->resource_dir) {
                         audio_path = g_build_filename(active_entry->dict->resource_dir, sound_file, NULL);
+                    }
+                    if (!audio_path && active_entry->dict->source_dir) {
+                        audio_path = g_build_filename(active_entry->dict->source_dir, sound_file, NULL);
                     }
 
                     if (audio_path && g_file_test(audio_path, G_FILE_TEST_EXISTS)) {
@@ -3003,7 +3006,7 @@ static void on_decide_policy(WebKitWebView *v, WebKitPolicyDecision *d, WebKitPo
                     }
                     g_free(audio_path);
                 } else {
-                    fprintf(stderr, "[AUDIO ERROR] No active dictionary or resource directory\n");
+                    fprintf(stderr, "[AUDIO ERROR] No active dictionary entry\n");
                 }
             }
             
