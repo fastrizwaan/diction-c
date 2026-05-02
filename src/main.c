@@ -1556,8 +1556,8 @@ static GtkWidget *sidebar_list_item_make_label(void) {
     gtk_label_set_use_markup(GTK_LABEL(label), TRUE);
     gtk_widget_set_margin_start(label, 12);
     gtk_widget_set_margin_end(label, 12);
-    gtk_widget_set_margin_top(label, 8);
-    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_top(label, 4);
+    gtk_widget_set_margin_bottom(label, 4);
     return label;
 }
 
@@ -3281,7 +3281,6 @@ static GtkWidget *create_sidebar_list_view(SidebarListView *sidebar, GCallback a
     g_signal_connect(factory, "bind", G_CALLBACK(sidebar_list_item_bind), sidebar);
 
     sidebar->list_view = GTK_LIST_VIEW(gtk_list_view_new(GTK_SELECTION_MODEL(sidebar->selection_model), factory));
-    gtk_widget_add_css_class(GTK_WIDGET(sidebar->list_view), "navigation-sidebar");
     gtk_list_view_set_single_click_activate(sidebar->list_view, TRUE);
     g_signal_connect(sidebar->list_view, "activate", activate_cb, sidebar);
     return GTK_WIDGET(sidebar->list_view);
@@ -3482,8 +3481,8 @@ static void related_list_item_setup(GtkSignalListItemFactory *factory, GtkListIt
     gtk_label_set_use_markup(GTK_LABEL(label), TRUE);
     gtk_widget_set_hexpand(label, TRUE);
     gtk_widget_set_margin_start(label, 12);
-    gtk_widget_set_margin_top(label, 8);
-    gtk_widget_set_margin_bottom(label, 8);
+    gtk_widget_set_margin_top(label, 4);
+    gtk_widget_set_margin_bottom(label, 4);
     
     GtkWidget *star_btn = gtk_button_new_from_icon_name("non-starred-symbolic");
     gtk_widget_add_css_class(star_btn, "flat");
