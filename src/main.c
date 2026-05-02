@@ -7033,19 +7033,21 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     "overlay-split-view > separator { background: @sidebar_bg_color; min-width: 1px; opacity: 1; }"
     "headerbar.sidebar { box-shadow: none; border-bottom: none; margin: 0; padding: 0; }"
     
-    /* search entry, left side of the search bar*/
+    /* search entry, left side of the search bar */
     ".linked entry { background: alpha(@theme_fg_color, 0.1); border: none; border-radius: 8px 0 0 8px; }"
-    /* search drop down button, right side of the search bar*/
+    ".linked button { background: alpha(@theme_fg_color, 0.1); border-radius: 0; }"
+    ".linked button:last-child { border-radius: 0 8px 8px 0; }"
+    ".linked button:first-child { border-radius: 8px 0 0 8px; }"
+    /* search drop down button, right side of the search bar */
     ".linked .search-scope-button { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 0 8px 8px 0; }"
-    
-    ".linked menubutton:last-child > button { border: none; border-radius: 0 8px 8px 0;}"
-    ".linked menubutton:last-child > button:hover { background: alpha(@theme_fg_color, 0.16); }"
-    ".linked menubutton:last-child > button:active { background: alpha(@theme_fg_color, 0.20); }"
-    ".linked menubutton:last-child > button:checked { background: alpha(@theme_fg_color, 0.24); }"
-    
-    ".linked button:first-child:hover { background: alpha(@theme_fg_color, 0.16); }"
-    ".linked button:first-child { border: none; border-radius: 8px 0 0 8px; }"
-    ".linked button:last-child { border: none; border-radius: 8px 0 0 8px; }"
+    ".linked .search-scope-button:hover { background: alpha(@theme_fg_color, 0.15); }"
+    ".linked .search-scope-button:active { background: alpha(@theme_fg_color, 0.2); }"
+    ".linked .search-scope-button button { background: none; border: none; box-shadow: none; border-radius: 0; }"
+    ".linked .search-scope-button button:hover { background: none; }"
+    ".linked > separator { opacity: 0; min-width: 0; }"
+    ".linked entry, .linked button, .linked .search-scope-button button { padding-left: 8px; padding-right: 8px; }"
+    ".linked entry:hover, .linked button:hover { background: alpha(@theme_fg_color, 0.12); }"
+    ".linked .linked button:checked, .search-scope-button:checked { background: alpha(@theme_fg_color, 0.06); }"
 );
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
