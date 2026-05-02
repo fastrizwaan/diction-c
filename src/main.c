@@ -7090,21 +7090,29 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
 
     GtkCssProvider *css_provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(css_provider,
-        ".sidebar-tabs { border-top: 0px solid alpha(@theme_fg_color, 0.1); }"
-        ".sidebar-tabs button { padding-left: 12px; padding-right: 12px; padding-top: 8px; padding-bottom: 8px; margin-left:  0.5px; margin-right: 0.5px; min-height: 0; min-width: 0; border: none; border-radius: 10px; }"
-        ".sidebar-tabs button image { opacity: 0.7; }"
-        ".sidebar-tabs button:checked { background: alpha(@theme_fg_color, 0.1); }"
-        ".sidebar-tabs button:checked image { opacity: 1.0; }"
-        ".sidebar-row { min-height: 34px; background: transparent; }"
-        ".content-header { background: transparent; }\n"
-        ".menu-item { font-weight: normal; padding: 4px 8px; min-height: 0; }"
-        "overlay-split-view > separator { background: @sidebar_bg_color; min-width: 1px; opacity: 1; }"
-        "headerbar.sidebar { box-shadow: none; border-bottom: none; margin: 0; padding: 0; }"
-        ".linked entry { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 8px 0 0 8px; min-height: 34px; }"
-        ".linked .search-scope-button { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 0 8px 8px 0; min-height: 34px; }"
-        ".linked .search-scope-button:hover { background: alpha(@theme_fg_color, 0.1); }"
-        ".linked .search-scope-button button { background: none; border: none; box-shadow: none; }"
-    );
+    ".sidebar-tabs { border-top: 0px solid alpha(@theme_fg_color, 0.1); }"
+    ".sidebar-tabs button { padding-left: 12px; padding-right: 12px; padding-top: 8px; padding-bottom: 8px; margin-left: 0.5px; margin-right: 0.5px; min-height: 0; min-width: 0; border: none; border-radius: 10px; }"
+    ".sidebar-tabs button image { opacity: 0.7; }"
+    ".sidebar-tabs button:checked { background: alpha(@theme_fg_color, 0.1); }"
+    ".sidebar-tabs button:checked image { opacity: 1.0; }"
+
+    ".sidebar-row { min-height: 34px; background: transparent; }"
+    ".content-header { background: transparent; }\n"
+    ".menu-item { font-weight: normal; padding: 4px 8px; min-height: 0; }"
+
+    "overlay-split-view > separator { background: @sidebar_bg_color; min-width: 1px; opacity: 1; }"
+    "headerbar.sidebar { box-shadow: none; border-bottom: none; margin: 0; padding: 0; }"
+
+    ".linked entry { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 8px 0 0 8px; }"
+    ".linked button { border-radius: 8px 0 0 8px; }"
+    ".linked .search-scope-button { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 0 8px 8px 0; }"
+    ".linked .search-scope-button:hover { background: alpha(@theme_fg_color, 0.12); }"
+    ".linked .search-scope-button:active { background: alpha(@theme_fg_color, 0.18); }"
+    ".linked .search-scope-button button { background: none; border: none; box-shadow: none; border-radius: 0; }"
+    ".linked .sidebar-row:hover { background: alpha(@theme_fg_color, 0.15); }"
+    ".linked entry, .linked button, .linked .search-scope-button button { padding-left: 8px; padding-right: 8px; }"
+
+);
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     // Apply saved theme preference
