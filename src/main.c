@@ -151,7 +151,7 @@ typedef struct {
 static SidebarListView dict_sidebar = {0};
 static SidebarListView history_sidebar = {0};
 static SidebarListView favorites_sidebar = {0};
-static SidebarListView groups_sidebar = {0};
+
 static GtkCssProvider *dynamic_theme_provider = NULL;
 
 static gboolean pulse_startup_splash(gpointer user_data) {
@@ -1702,7 +1702,7 @@ static void sidebar_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
 
 static void populate_history_sidebar(void);
 static void populate_favorites_sidebar(void);
-static void populate_groups_sidebar(void);
+
 static void populate_search_sidebar(const char *query);
 static gboolean dict_entry_in_active_scope(DictEntry *entry);
 
@@ -2375,28 +2375,7 @@ static char *scope_display_name_dup(const char *scope_id) {
     return g_strdup("All");
 }
 
-static guint count_enabled_dicts_in_scope(const char *scope_id) {
-    guint count = 0;
 
-    g_mutex_lock(&dict_loader_mutex);
-    DictEntry *entry = all_dicts;
-    while (entry) {
-        dict_entry_ref(entry);
-        g_mutex_unlock(&dict_loader_mutex);
-
-        if (dict_entry_in_scope(entry, scope_id)) {
-            count++;
-        }
-
-        g_mutex_lock(&dict_loader_mutex);
-        DictEntry *next = entry->next;
-        dict_entry_unref(entry);
-        entry = next;
-    }
-    g_mutex_unlock(&dict_loader_mutex);
-
-    return count;
-}
 
 static DictEntry *find_first_dict_in_active_scope(void) {
     DictEntry *found = NULL;
@@ -3011,60 +2990,6 @@ static void populate_favorites_sidebar(void) {
     g_ptr_array_free(payloads, TRUE);
 }
 
-static void populate_groups_sidebar(void) {
-    ensure_valid_active_scope();
-
-    GPtrArray *labels = g_ptr_array_new_with_free_func(g_free);
-    GPtrArray *payloads = g_ptr_array_new();
-    SidebarRowPayload *active_payload = NULL;
-
-    SidebarRowPayload *all_payload = g_new0(SidebarRowPayload, 1);
-    char all_subtitle[64];
-    g_snprintf(all_subtitle, sizeof(all_subtitle), "%u dictionaries", count_enabled_dicts_in_scope("all"));
-    all_payload->type = SIDEBAR_ROW_GROUP;
-    all_payload->title = g_strdup("All");
-    all_payload->subtitle = g_strdup(all_subtitle);
-    all_payload->scope_id = g_strdup("all");
-    g_ptr_array_add(labels, g_strdup(all_payload->title));
-    g_ptr_array_add(payloads, all_payload);
-    if (!active_scope_id || g_strcmp0(active_scope_id, "all") == 0) {
-        active_payload = all_payload;
-    }
-
-    if (!app_settings) {
-        set_sidebar_list_rows(&groups_sidebar, labels, payloads);
-        sidebar_list_select_payload(&groups_sidebar, active_payload);
-        g_ptr_array_free(labels, TRUE);
-        g_ptr_array_free(payloads, TRUE);
-        rebuild_search_scope_menu();
-        update_search_scope_button_label();
-        return;
-    }
-
-    for (guint i = 0; i < app_settings->dictionary_groups->len; i++) {
-        DictGroup *grp = g_ptr_array_index(app_settings->dictionary_groups, i);
-        SidebarRowPayload *payload = g_new0(SidebarRowPayload, 1);
-        char subtitle[64];
-        g_snprintf(subtitle, sizeof(subtitle), "%u dictionaries", count_enabled_dicts_in_scope(grp->id));
-        payload->type = SIDEBAR_ROW_GROUP;
-        payload->title = g_strdup(grp->name);
-        payload->subtitle = g_strdup(subtitle);
-        payload->scope_id = g_strdup(grp->id);
-        g_ptr_array_add(labels, g_strdup(payload->title));
-        g_ptr_array_add(payloads, payload);
-        if (active_scope_id && g_strcmp0(active_scope_id, grp->id) == 0) {
-            active_payload = payload;
-        }
-    }
-
-    set_sidebar_list_rows(&groups_sidebar, labels, payloads);
-    sidebar_list_select_payload(&groups_sidebar, active_payload);
-    g_ptr_array_free(labels, TRUE);
-    g_ptr_array_free(payloads, TRUE);
-    rebuild_search_scope_menu();
-    update_search_scope_button_label();
-}
-
 static void update_search_scope_button_label(void) {
     if (!search_scope_button_label) {
         return;
@@ -3133,7 +3058,7 @@ static void set_active_scope(const char *scope_id, gboolean refresh_results) {
     if (refresh_results) {
         refresh_search_results();
     } else {
-        populate_groups_sidebar();
+
         populate_dict_sidebar();
     }
 }
@@ -3265,7 +3190,7 @@ static void related_list_item_bind(GtkSignalListItemFactory *factory, GtkListIte
 static void on_related_item_activated(GtkListView *view, guint position, gpointer user_data);
 static void on_history_item_activated(GtkListView *view, guint position, gpointer user_data);
 static void on_favorites_item_activated(GtkListView *view, guint position, gpointer user_data);
-static void on_groups_item_activated(GtkListView *view, guint position, gpointer user_data);
+
 static void on_dict_item_activated(GtkListView *view, guint position, gpointer user_data);
 
 static void append_rendered_word_html_impl(const char *raw_word, gboolean push_history);
@@ -3590,16 +3515,7 @@ static void on_favorites_item_activated(GtkListView *view, guint position, gpoin
 
 
 
-static void on_groups_item_activated(GtkListView *view, guint position, gpointer user_data) {
-    (void)view;
-    SidebarListView *sidebar = user_data;
-    SidebarRowPayload *payload = sidebar_payload_at(sidebar, position);
-    if (!payload || payload->type != SIDEBAR_ROW_GROUP) {
-        return;
-    }
-    set_active_scope(payload->scope_id ? payload->scope_id : "all", TRUE);
-    sidebar_list_select_payload(sidebar, payload);
-}
+
 
 static void on_dict_item_activated(GtkListView *view, guint position, gpointer user_data) {
     (void)view;
@@ -4600,7 +4516,7 @@ static void refresh_search_results(void) {
     const char *main_query = search_entry ? gtk_editable_get_text(GTK_EDITABLE(search_entry)) : NULL;
     populate_search_sidebar_with_mode(main_query, current_tab_is_full_text_search());
     populate_dict_sidebar();
-    populate_groups_sidebar();
+
 }
 
 static double shift_color_component(double val, double amount, int darken) {
@@ -5017,7 +4933,7 @@ static void reload_dictionaries_from_settings(void *user_data) {
 
     // Clear sidebar and transient state
     clear_related_rows();
-    clear_sidebar_list(&groups_sidebar);
+
     dictionary_loading_in_progress = FALSE;
 
     // Show "Reloading..." and start async scan
@@ -5030,7 +4946,7 @@ static void reload_dictionaries_from_settings(void *user_data) {
     populate_dict_sidebar();
     populate_history_sidebar();
     populate_favorites_sidebar();
-    populate_groups_sidebar();
+
     populate_search_sidebar(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
     startup_loading_active = TRUE;
     if (!start_async_dict_loading(discover_from_dirs)) {
@@ -5053,9 +4969,11 @@ static void finalize_dictionary_loading(gboolean allow_random_word, gboolean syn
         set_active_entry(all_dicts);
     }
     populate_dict_sidebar();
-    populate_groups_sidebar();
+
     populate_history_sidebar();
     populate_favorites_sidebar();
+    rebuild_search_scope_menu();
+    update_search_scope_button_label();
     populate_search_sidebar(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
     refresh_search_results();
 
@@ -5101,7 +5019,9 @@ static void refresh_dictionaries_ui(void *user_data) {
     populate_dict_sidebar();
     populate_history_sidebar();
     populate_favorites_sidebar();
-    populate_groups_sidebar();
+    rebuild_search_scope_menu();
+    update_search_scope_button_label();
+
     if (search_entry) {
         populate_search_sidebar(gtk_editable_get_text(GTK_EDITABLE(search_entry)));
     }
@@ -6799,13 +6719,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         create_sidebar_list_view(&favorites_sidebar, G_CALLBACK(on_favorites_item_activated)));
     adw_view_stack_add_titled_with_icon(sidebar_stack, favorites_scroll, "favorites", "Favorites", "starred-symbolic");
 
-    /* Groups Tab */
-    GtkWidget *groups_scroll = gtk_scrolled_window_new();
-    gtk_widget_set_vexpand(groups_scroll, TRUE);
-    gtk_widget_set_hexpand(groups_scroll, TRUE);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(groups_scroll),
-        create_sidebar_list_view(&groups_sidebar, G_CALLBACK(on_groups_item_activated)));
-    adw_view_stack_add_titled_with_icon(sidebar_stack, groups_scroll, "groups", "Groups", "dictionary-symbolic");
+
 
     gtk_box_append(GTK_BOX(sidebar_vbox), GTK_WIDGET(sidebar_stack));
 
@@ -6822,12 +6736,11 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         {"system-search-symbolic", "search", "Search"},
         {"starred-symbolic", "favorites", "Favorites"},
         {"document-open-recent-symbolic", "history", "History"},
-        {"dictionary-symbolic", "groups", "Groups"},
         {"accessories-dictionary-symbolic", "dictionaries", "Dictionaries"}
     };
 
     GtkWidget *first_btn = NULL;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 4; i++) {
         GtkWidget *btn = gtk_toggle_button_new();
         gtk_button_set_icon_name(GTK_BUTTON(btn), tabs[i][0]);
         gtk_widget_set_tooltip_text(btn, tabs[i][2]);
@@ -7090,9 +7003,10 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     populate_dict_sidebar();
     populate_history_sidebar();
     populate_favorites_sidebar();
-    populate_groups_sidebar();
-    populate_search_sidebar(NULL);
+    rebuild_search_scope_menu();
+    update_search_scope_button_label();
 
+    populate_search_sidebar(NULL);
 
     /* Auto-select first dictionary */
     if (all_dicts) {
