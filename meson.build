@@ -79,6 +79,7 @@ install_data(
 install_data(
   'data/icons/hicolor/scalable/actions/dice3-symbolic.svg',
   'data/icons/hicolor/scalable/actions/search-dictionary-symbolic.svg',
+  'data/icons/hicolor/scalable/actions/dictionary-symbolic.svg',
   install_dir: join_paths(get_option('datadir'), 'icons', 'hicolor', 'scalable', 'actions')
 )
 

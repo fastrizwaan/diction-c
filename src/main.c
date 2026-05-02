@@ -2362,7 +2362,7 @@ static void ensure_valid_active_scope(void) {
 
 static char *scope_display_name_dup(const char *scope_id) {
     if (!scope_id || g_strcmp0(scope_id, "all") == 0 || !app_settings) {
-        return g_strdup("All Dictionaries");
+        return g_strdup("All");
     }
 
     for (guint i = 0; i < app_settings->dictionary_groups->len; i++) {
@@ -2372,7 +2372,7 @@ static char *scope_display_name_dup(const char *scope_id) {
         }
     }
 
-    return g_strdup("All Dictionaries");
+    return g_strdup("All");
 }
 
 static guint count_enabled_dicts_in_scope(const char *scope_id) {
@@ -3022,7 +3022,7 @@ static void populate_groups_sidebar(void) {
     char all_subtitle[64];
     g_snprintf(all_subtitle, sizeof(all_subtitle), "%u dictionaries", count_enabled_dicts_in_scope("all"));
     all_payload->type = SIDEBAR_ROW_GROUP;
-    all_payload->title = g_strdup("All Dictionaries");
+    all_payload->title = g_strdup("All");
     all_payload->subtitle = g_strdup(all_subtitle);
     all_payload->scope_id = g_strdup("all");
     g_ptr_array_add(labels, g_strdup(all_payload->title));
@@ -3072,8 +3072,8 @@ static void update_search_scope_button_label(void) {
 
     ensure_valid_active_scope();
     char *label = scope_display_name_dup(active_scope_id);
-    gtk_label_set_text(search_scope_button_label, label ? label : "All Dictionaries");
-    gtk_widget_set_tooltip_text(GTK_WIDGET(search_scope_button), label ? label : "All Dictionaries");
+    gtk_label_set_text(search_scope_button_label, label ? label : "All");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(search_scope_button), label ? label : "All");
     g_free(label);
 }
 
@@ -3086,7 +3086,7 @@ static void rebuild_search_scope_menu(void) {
 
     GMenu *menu = g_menu_new();
 
-    GMenuItem *all_item = g_menu_item_new("All Dictionaries", NULL);
+    GMenuItem *all_item = g_menu_item_new("All", NULL);
     g_menu_item_set_action_and_target(all_item, "app.search-scope", "s", "all");
     g_menu_append_item(menu, all_item);
     g_object_unref(all_item);
@@ -6677,6 +6677,16 @@ static void on_tab_selected(AdwTabView *view, GParamSpec *pspec, gpointer user_d
     }
 }
 
+static void on_scope_button_active_changed(GtkMenuButton *btn, GParamSpec *pspec, gpointer user_data) {
+    (void)pspec;
+    /* Only act on close (active → FALSE); while opening the popover owns focus. */
+    if (!gtk_menu_button_get_active(btn)) {
+        GtkWidget *entry = GTK_WIDGET(user_data);
+        if (entry && gtk_widget_get_mapped(entry))
+            gtk_widget_grab_focus(entry);
+    }
+}
+
 static void on_activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
     if (main_window) {
@@ -6795,7 +6805,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_hexpand(groups_scroll, TRUE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(groups_scroll),
         create_sidebar_list_view(&groups_sidebar, G_CALLBACK(on_groups_item_activated)));
-    adw_view_stack_add_titled_with_icon(sidebar_stack, groups_scroll, "groups", "Groups", "folder-symbolic");
+    adw_view_stack_add_titled_with_icon(sidebar_stack, groups_scroll, "groups", "Groups", "dictionary-symbolic");
 
     gtk_box_append(GTK_BOX(sidebar_vbox), GTK_WIDGET(sidebar_stack));
 
@@ -6812,7 +6822,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
         {"system-search-symbolic", "search", "Search"},
         {"starred-symbolic", "favorites", "Favorites"},
         {"document-open-recent-symbolic", "history", "History"},
-        {"folder-symbolic", "groups", "Groups"},
+        {"dictionary-symbolic", "groups", "Groups"},
         {"accessories-dictionary-symbolic", "dictionaries", "Dictionaries"}
     };
 
@@ -6927,8 +6937,8 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_stack_set_visible_child_name(search_stack, "button");
 
     GtkWidget *scope_btn_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-    GtkWidget *scope_icon = gtk_image_new_from_icon_name("folder-symbolic");
-    search_scope_button_label = GTK_LABEL(gtk_label_new("All Dictionaries"));
+    GtkWidget *scope_icon = gtk_image_new_from_icon_name("dictionary-symbolic");
+    search_scope_button_label = GTK_LABEL(gtk_label_new("All"));
     gtk_label_set_ellipsize(search_scope_button_label, PANGO_ELLIPSIZE_END);
     gtk_label_set_single_line_mode(search_scope_button_label, TRUE);
     gtk_widget_set_hexpand(GTK_WIDGET(search_scope_button_label), FALSE);
@@ -6942,6 +6952,12 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_add_css_class(GTK_WIDGET(search_scope_button), "search-scope-button");
     gtk_menu_button_set_child(search_scope_button, scope_btn_content);
     gtk_widget_set_tooltip_text(GTK_WIDGET(search_scope_button), "Search scope");
+    /* After the scope popover closes, GTK leaves focus on the GtkMenuButton which
+     * causes a persistent highlight that CSS :focus rules cannot reliably clear.
+     * on_scope_button_active_changed() moves focus to the search entry so the
+     * button returns to its resting state. */
+    g_signal_connect(search_scope_button, "notify::active",
+        G_CALLBACK(on_scope_button_active_changed), search_entry);
 
     adw_header_bar_pack_start(ADW_HEADER_BAR(content_header), nav_back_btn);
     adw_header_bar_pack_start(ADW_HEADER_BAR(content_header), nav_forward_btn);
@@ -7103,15 +7119,20 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     "overlay-split-view > separator { background: @sidebar_bg_color; min-width: 1px; opacity: 1; }"
     "headerbar.sidebar { box-shadow: none; border-bottom: none; margin: 0; padding: 0; }"
 
-    ".linked entry { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 8px 0 0 8px; }"
-    ".linked button { border-radius: 8px 0 0 8px; }"
-    ".linked .search-scope-button { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 0 8px 8px 0; }"
-    ".linked .search-scope-button:hover { background: alpha(@theme_fg_color, 0.12); }"
-    ".linked .search-scope-button:active { background: alpha(@theme_fg_color, 0.18); }"
-    ".linked .search-scope-button button { background: none; border: none; box-shadow: none; border-radius: 0; }"
-    ".linked .sidebar-row:hover { background: alpha(@theme_fg_color, 0.15); }"
-    ".linked entry, .linked button, .linked .search-scope-button button { padding-left: 8px; padding-right: 8px; }"
+    ".linked entry { background: alpha(@theme_fg_color, 0.1); border: none; border-radius: 8px 0 0 8px; }"
+    ".linked button { background: alpha(@theme_fg_color, 0.1); border-radius: 0; }"
+    ".linked button:last-child { border-radius: 0 8px 8px 0; }"
+    ".linked button:first-child { border-radius: 8px 0 0 8px; }"
 
+    ".linked .search-scope-button { background: alpha(@theme_fg_color, 0.06); border: none; border-radius: 0 8px 8px 0; }"
+    ".linked .search-scope-button:hover { background: alpha(@theme_fg_color, 0.15); }"
+    ".linked .search-scope-button:active { background: alpha(@theme_fg_color, 0.2); }"
+    ".linked .search-scope-button button { background: none; border: none; box-shadow: none; border-radius: 0; }"
+    ".linked .search-scope-button button:hover { background: none; }"
+    ".linked > separator { opacity: 0; min-width: 0; }"
+    ".linked entry, .linked button, .linked .search-scope-button button { padding-left: 8px; padding-right: 8px; }"
+    ".linked entry:hover, .linked button:hover { background: alpha(@theme_fg_color, 0.1; }"
+    ".linked .linked button:checked, .search-scope-button:checked { background: alpha(@theme_fg_color, 0.06); }"
 );
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(css_provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
