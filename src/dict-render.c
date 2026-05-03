@@ -2276,7 +2276,7 @@ char* dsl_render_to_html(const char *dsl_text,
     /* Wiktionary .fvr 'or X / or Y' alternative word list */
     buf_append_str(&b, ".fvr{display:block;font-size:0.88em;font-weight:normal;margin:0.1em 0;padding:0;}");
     buf_append_str(&b, ".fvr li{display:block;list-style:none;margin:0;padding:0;}");
-    buf_append_str(&b, ".fvr li::before{content:'or\00a0';font-style:italic;opacity:0.75;}");
+    buf_append_str(&b, ".fvr li::before{content:'or\\00a0';font-style:italic;opacity:0.75;}");
     buf_append_str(&b, ".dsl-media-image{display:block;max-width:100%;height:auto;margin:0.35em 0;}");
     buf_append_str(&b, ".trn, .sense{color:");
     buf_append_str(&b, trn_color);
