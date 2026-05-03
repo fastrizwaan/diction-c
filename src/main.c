@@ -1458,8 +1458,18 @@ static void clear_related_rows(void) {
 }
 
 static void set_related_rows(GPtrArray *labels, GPtrArray *payloads) {
+    char *selected_text = NULL;
+    if (related_selection_model) {
+        guint pos = gtk_single_selection_get_selected(related_selection_model);
+        if (pos != GTK_INVALID_LIST_POSITION) {
+            GtkStringObject *obj = g_list_model_get_item(G_LIST_MODEL(related_string_list), pos);
+            if (obj) selected_text = g_strdup(gtk_string_object_get_string(obj));
+        }
+    }
+
     clear_related_rows();
     if (!labels || labels->len == 0 || !GTK_IS_STRING_LIST(related_string_list) || !related_row_payloads) {
+        g_free(selected_text);
         return;
     }
 
@@ -1474,6 +1484,18 @@ static void set_related_rows(GPtrArray *labels, GPtrArray *payloads) {
         g_ptr_array_add(related_row_payloads, g_ptr_array_index(payloads, i));
     }
     g_ptr_array_set_size(payloads, 0);
+
+    /* Restore selection if the word is still in the new list */
+    if (selected_text && related_selection_model) {
+        for (guint i = 0; i < g_list_model_get_n_items(G_LIST_MODEL(related_string_list)); i++) {
+            GtkStringObject *obj = g_list_model_get_item(G_LIST_MODEL(related_string_list), i);
+            if (obj && g_strcmp0(gtk_string_object_get_string(obj), selected_text) == 0) {
+                gtk_single_selection_set_selected(related_selection_model, i);
+                break;
+            }
+        }
+    }
+    g_free(selected_text);
 }
 
 static void append_related_rows(GPtrArray *labels, GPtrArray *payloads) {
@@ -1509,8 +1531,18 @@ static void clear_sidebar_list(SidebarListView *sidebar) {
 }
 
 static void set_sidebar_list_rows(SidebarListView *sidebar, GPtrArray *labels, GPtrArray *payloads) {
+    char *selected_text = NULL;
+    if (sidebar && sidebar->selection_model) {
+        guint pos = gtk_single_selection_get_selected(sidebar->selection_model);
+        if (pos != GTK_INVALID_LIST_POSITION) {
+            GtkStringObject *obj = g_list_model_get_item(G_LIST_MODEL(sidebar->string_list), pos);
+            if (obj) selected_text = g_strdup(gtk_string_object_get_string(obj));
+        }
+    }
+
     clear_sidebar_list(sidebar);
     if (!sidebar || !labels || labels->len == 0 || !GTK_IS_STRING_LIST(sidebar->string_list) || !sidebar->payloads) {
+        g_free(selected_text);
         return;
     }
 
@@ -1525,6 +1557,18 @@ static void set_sidebar_list_rows(SidebarListView *sidebar, GPtrArray *labels, G
     }
     gtk_string_list_splice(sidebar->string_list, 0, 0, (const char * const *)items);
     g_free(items);
+
+    /* Restore selection if the item is still in the new list */
+    if (selected_text && sidebar->selection_model) {
+        for (guint i = 0; i < g_list_model_get_n_items(G_LIST_MODEL(sidebar->string_list)); i++) {
+            GtkStringObject *obj = g_list_model_get_item(G_LIST_MODEL(sidebar->string_list), i);
+            if (obj && g_strcmp0(gtk_string_object_get_string(obj), selected_text) == 0) {
+                gtk_single_selection_set_selected(sidebar->selection_model, i);
+                break;
+            }
+        }
+    }
+    g_free(selected_text);
 }
 
 static SidebarRowPayload *sidebar_payload_at(SidebarListView *sidebar, guint position) {
@@ -4672,9 +4716,9 @@ static void update_theme_colors(void) {
     /* Selection colors: standard blue for default, palette accent for others */
     char sidebar_hover[64];
     if (is_default_theme) {
-        g_strlcpy(sidebar_hover, dark_mode ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.08)", sizeof(sidebar_hover));
+        g_strlcpy(sidebar_hover, dark_mode ? "rgba(255, 255, 255, 0.06)" : "rgba(0, 0, 0, 0.04)", sizeof(sidebar_hover));
     } else {
-        g_snprintf(sidebar_hover, sizeof(sidebar_hover), "rgba(%u,%u,%u,0.2)", ar, ag, ab);
+        g_snprintf(sidebar_hover, sizeof(sidebar_hover), "rgba(%u,%u,%u,0.12)", ar, ag, ab);
     }
 
     char *css = g_strdup_printf(
@@ -4725,7 +4769,7 @@ static void update_theme_colors(void) {
         "row, listitem {\n"
         "  color: inherit;\n"
         "}\n"
-        "row:selected, listitem:selected {\n"
+        "row:selected, listitem:selected, row:selected:focus, listitem:selected:focus, row:selected:focus-within, listitem:selected:focus-within {\n"
         "  background-color: @accent_bg_color !important;\n"
         "  color: #ffffff !important;\n"
         "  outline: none;\n"
@@ -5290,9 +5334,6 @@ static void populate_dict_sidebar(void) {
     }
 
     set_sidebar_list_rows(&dict_sidebar, labels, payloads);
-    if (dict_sidebar.selection_model) {
-        gtk_single_selection_set_selected(dict_sidebar.selection_model, GTK_INVALID_LIST_POSITION);
-    }
 
     g_ptr_array_free(labels, TRUE);
     g_ptr_array_free(payloads, TRUE);

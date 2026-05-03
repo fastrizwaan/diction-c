@@ -26,3 +26,11 @@ use goldendict's logic; but update css to match our themes
 Wikipedia support
 online wiktionary support
 online dictionary support
+
+
+--
+CLI support
+diction search "abc"
+diction use "path to file" - which should use the dictionary file (after adding it) and selecting this added in the groups/dictionary dropdown
+
+also try to implement other dic:// or search:// uri
