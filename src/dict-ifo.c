@@ -20,6 +20,8 @@
 #include <glib.h>
 #include <ctype.h>
 #include "dict-cache.h"
+#include "dict-cache-builder.h"
+#include "dict-chunked.h"
 #include "settings.h"
 
 /* IFO uses multi-source cache validation since it has .ifo + .idx + .dict */
@@ -360,7 +362,7 @@ static int parse_ifo_metadata(const char *ifo_path,
     return 0;
 }
 
-static gboolean build_stardict_cache(FILE *cache_file,
+static gboolean build_stardict_cache(DictCacheBuilder *builder,
                                      const unsigned char *idx_data,
                                      size_t idx_size,
                                      const unsigned char *dict_raw,
@@ -416,13 +418,10 @@ static gboolean build_stardict_cache(FILE *cache_file,
             append_html_escaped_text(article, (const char *)dict_raw + def_offset, def_size);
         }
 
-        long hw_off = ftell(cache_file);
-        fwrite(hw_start, 1, hw_len, cache_file);
-        fwrite("\n", 1, 1, cache_file);
-
-        long def_off = ftell(cache_file);
-        fwrite(article->str, 1, article->len, cache_file);
-        fwrite("\n", 1, 1, cache_file);
+        uint64_t hw_off = 0;
+        uint64_t def_off = 0;
+        dict_cache_builder_add_headword(builder, (const char *)hw_start, hw_len, &hw_off);
+        dict_cache_builder_add_definition(builder, article->str, article->len, &def_off);
 
         if (count == cap) {
             cap *= 2;
@@ -474,12 +473,21 @@ static DictMmap *open_cached_stardict(const char *cache_path, char *bookname, ch
     dict->name = bookname;
     dict->resource_dir = resource_dir;
     dict->index = flat_index_open(dict->data, dict->size);
+    if (dict_cache_is_compressed(dict->data, dict->size)) {
+        dict->is_compressed = TRUE;
+        dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+    }
 
     /* Validate the index loaded from cache */
     if (dict->index && dict->index->count > 0) {
         if (!flat_index_validate(dict->index)) {
             fprintf(stderr, "[IFO] Cache index validation failed for %s — rebuilding index.\n", cache_path);
             flat_index_close(dict->index);
+            if (dict->chunk_reader) {
+                dict_chunk_reader_free(dict->chunk_reader);
+                dict->chunk_reader = NULL;
+                dict->is_compressed = FALSE;
+            }
             dict->index = g_new0(FlatIndex, 1);
             dict->index->mmap_data = dict->data;
             dict->index->mmap_size = dict->size;
@@ -571,8 +579,8 @@ DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint 
         g_free(idx_data);
         return NULL;
     }
-    FILE *cache_file = fopen(cache_path, "wb");
-    if (!cache_file) {
+    DictCacheBuilder *builder = dict_cache_builder_new(cache_path, wordcount);
+    if (!builder) {
         g_free(bookname);
         g_free(resource_dir);
         g_free(cache_path);
@@ -583,45 +591,34 @@ DictMmap* parse_stardict(const char *ifo_path, volatile gint *cancel_flag, gint 
         return NULL;
     }
 
-    uint64_t zero_count = 0;
-    fwrite(&zero_count, 8, 1, cache_file);
-
     TreeEntry *entries = NULL;
     size_t entry_count = 0;
     settings_scan_progress_notify(ifo_path, 30);
-    gboolean built = build_stardict_cache(cache_file, idx_data, idx_size, dict_raw, dict_raw_len,
+    gboolean built = build_stardict_cache(builder, idx_data, idx_size, dict_raw, dict_raw_len,
                                           sametypesequence, &entries, &entry_count,
                                           ifo_path, cancel_flag, expected);
 
     if (built && entry_count > 0 && entries) {
-        /* Flush data portion (without index yet), then read it back for sorting */
-        long data_end = ftell(cache_file);
-        fclose(cache_file);
+        dict_cache_builder_flush(builder);
 
         /* Read the data portion to use for sorting headwords */
         FILE *rf = fopen(cache_path, "rb");
         if (rf) {
-            char *cache_data = malloc(data_end > 0 ? data_end : 1);
-            if (cache_data && fread(cache_data, 1, data_end, rf) == (size_t)data_end) {
-                flat_index_sort_entries(entries, entry_count, cache_data, data_end);
+            struct stat sort_st;
+            int sort_fd = fileno(rf);
+            if (fstat(sort_fd, &sort_st) == 0 && sort_st.st_size > 0) {
+                char *cache_data = malloc((size_t)sort_st.st_size);
+                if (cache_data && fread(cache_data, 1, (size_t)sort_st.st_size, rf) == (size_t)sort_st.st_size) {
+                    flat_index_sort_entries(entries, entry_count, cache_data, (size_t)sort_st.st_size);
+                }
+                free(cache_data);
             }
-            free(cache_data);
             fclose(rf);
         }
 
-        /* Reopen to append sorted index */
-        cache_file = fopen(cache_path, "r+b");
-        if (cache_file) {
-            fseek(cache_file, data_end, SEEK_SET);
-            fwrite(entries, sizeof(TreeEntry), entry_count, cache_file);
-            fseek(cache_file, 0, SEEK_SET);
-            uint64_t final_count = (uint64_t)entry_count;
-            fwrite(&final_count, 8, 1, cache_file);
-            fclose(cache_file);
-        }
-    } else {
-        fclose(cache_file);
+        dict_cache_builder_finalize(builder, entries, (uint64_t)entry_count);
     }
+    dict_cache_builder_free(builder);
     dict_cache_sync_mtime(cache_path, sources, G_N_ELEMENTS(sources));
 
     g_free(entries);

@@ -18,6 +18,8 @@
 #include "settings.h"
 
 #include "dict-cache.h"
+#include "dict-cache-builder.h"
+#include "dict-chunked.h"
 
 static const char *bgl_charset[] = {
     "WINDOWS-1252", /* Default */
@@ -171,7 +173,7 @@ static char *format_bgl_definition(const unsigned char *def_data, size_t def_len
     return utf8_def;
 }
 
-static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out_file,
+static size_t transcode_bgl_blocks(const char *data, size_t data_size, DictCacheBuilder *builder,
                                    TreeEntry **out_entries, char **out_name,
                                    const char *path, volatile gint *cancel_flag, gint expected) {
     const unsigned char *p = (const unsigned char *)data;
@@ -241,9 +243,6 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
     
     const char *source_charset = is_utf8 ? "UTF-8" : (source_charset_override ? source_charset_override : default_charset);
     const char *target_charset = is_utf8 ? "UTF-8" : (target_charset_override ? target_charset_override : default_charset);
-
-    // Initial offset in the new out_file
-    uint64_t current_file_offset = 8; 
 
     while (p < end) {
         if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) break;
@@ -363,19 +362,16 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
                 size_t decoded_def_len = 0;
                 char *def_utf8 = format_bgl_definition(def_data, def_len, target_charset, &decoded_def_len);
                 
-                // Write null-terminated strings
-                fwrite(hw_utf8, 1, decoded_hw_len, out_file);
-                fputc(0, out_file);
-                fwrite(def_utf8, 1, decoded_def_len, out_file);
-                fputc(0, out_file);
+                uint64_t hw_off = 0;
+                uint64_t def_off = 0;
+                dict_cache_builder_add_headword(builder, hw_utf8, decoded_hw_len, &hw_off);
+                dict_cache_builder_add_definition(builder, def_utf8, decoded_def_len, &def_off);
                 
-                entries[word_count].h_off = current_file_offset;
+                entries[word_count].h_off = hw_off;
                 entries[word_count].h_len = decoded_hw_len;
-                entries[word_count].d_off = current_file_offset + decoded_hw_len + 1;
+                entries[word_count].d_off = def_off;
                 entries[word_count].d_len = decoded_def_len;
                 word_count++;
-                
-                current_file_offset += decoded_hw_len + 1 + decoded_def_len + 1;
                 
                 g_free(hw_utf8);
                 g_free(def_utf8);
@@ -391,7 +387,7 @@ static size_t transcode_bgl_blocks(const char *data, size_t data_size, FILE *out
         // Wait, flat_index_sort_entries needs `data` mapping!
         // We can just sort entries by reading the data from `out_file`.
         *out_entries = entries;
-        fflush(out_file);
+        dict_cache_builder_flush(builder);
         // Let the caller handle index sorting since it requires memory map of the new file.
     } else {
         g_free(entries);
@@ -461,10 +457,16 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
         dict->size = dict_size;
         dict->resource_dir = find_bgl_resource_dir(path);
         dict->index = flat_index_open(dict->data, dict->size);
+        if (dict_cache_is_compressed(dict->data, dict->size)) {
+            dict->is_compressed = TRUE;
+            dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+        }
 
         if (!dict->index || dict->index->count == 0) {
             fprintf(stderr, "[BGL] Cache invalid structure. Rebuilding completely.\n");
             flat_index_close(dict->index);
+            if (dict->chunk_reader) dict_chunk_reader_free(dict->chunk_reader);
+            g_free(dict->resource_dir);
             munmap((void*)dict->data, dict->size);
             close(dict->fd);
             g_free(dict);
@@ -529,39 +531,44 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
             g_free(cache_path);
             return NULL;
         }
-        FILE *cache_file = fopen(cache_path, "wb");
-        uint64_t zero_count = 0;
-        fwrite(&zero_count, 8, 1, cache_file);
+        DictCacheBuilder *builder = dict_cache_builder_new(cache_path, 0);
+        if (!builder) {
+            munmap((void*)raw_data, raw_st.st_size);
+            close(raw_fd);
+            unlink(tmp_raw);
+            g_free(cache_path);
+            return NULL;
+        }
 
         TreeEntry *entries = NULL;
         char *dict_name = NULL;
         settings_scan_progress_notify(path, 35);
-        size_t entry_count = transcode_bgl_blocks(raw_data, raw_st.st_size, cache_file, &entries, &dict_name, path, cancel_flag, expected);
+        size_t entry_count = transcode_bgl_blocks(raw_data, raw_st.st_size, builder, &entries, &dict_name, path, cancel_flag, expected);
 
         munmap((void*)raw_data, raw_st.st_size);
         close(raw_fd);
         unlink(tmp_raw);
 
         if (entry_count > 0 && entries) {
-            fflush(cache_file);
-            long data_end = ftell(cache_file);
+            dict_cache_builder_flush(builder);
             
             // Map the newly written strings to sort the entries!
             int tmp_cache_fd = open(cache_path, O_RDONLY);
-            const char *tmp_cache_data = mmap(NULL, data_end, PROT_READ, MAP_PRIVATE, tmp_cache_fd, 0);
-            
-            flat_index_sort_entries(entries, entry_count, tmp_cache_data, data_end);
-            
-            munmap((void*)tmp_cache_data, data_end);
-            close(tmp_cache_fd);
-            
-            fseek(cache_file, data_end, SEEK_SET);
-            fwrite(entries, sizeof(TreeEntry), entry_count, cache_file);
-            fseek(cache_file, 0, SEEK_SET);
-            uint64_t final_count = (uint64_t)entry_count;
-            fwrite(&final_count, 8, 1, cache_file);
+            if (tmp_cache_fd >= 0) {
+                struct stat st_tmp;
+                if (fstat(tmp_cache_fd, &st_tmp) == 0 && st_tmp.st_size > 0) {
+                    const char *tmp_cache_data = mmap(NULL, (size_t)st_tmp.st_size, PROT_READ, MAP_PRIVATE, tmp_cache_fd, 0);
+                    if (tmp_cache_data != MAP_FAILED) {
+                        flat_index_sort_entries(entries, entry_count, tmp_cache_data, (size_t)st_tmp.st_size);
+                        munmap((void*)tmp_cache_data, (size_t)st_tmp.st_size);
+                    }
+                }
+                close(tmp_cache_fd);
+            }
+
+            dict_cache_builder_finalize(builder, entries, (uint64_t)entry_count);
         }
-        fclose(cache_file);
+        dict_cache_builder_free(builder);
         g_free(entries);
 
         struct stat src_st;
@@ -586,6 +593,10 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
         dict->name = dict_name;
         dict->resource_dir = find_bgl_resource_dir(path);
         dict->index = flat_index_open(dict->data, dict->size);
+        if (dict_cache_is_compressed(dict->data, dict->size)) {
+            dict->is_compressed = TRUE;
+            dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+        }
 
         g_free(cache_path);
         printf("[BGL] Loaded %zu entries from %s\n", dict->index ? dict->index->count : 0, path);

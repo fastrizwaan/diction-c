@@ -16,6 +16,9 @@ typedef struct DictMmap {
     const char *data;
     size_t size;
     FlatIndex *index;
+    struct DictChunkReader *chunk_reader;
+    struct DictFtsIndex *fts_index;
+    gboolean is_compressed;
     char *name;
     char *source_dir;
     char *resource_dir;

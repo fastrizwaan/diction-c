@@ -11,6 +11,70 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 #include <archive.h>
 #include <archive_entry.h>
+#include "dict-chunked.h"
+#include "dict-fts-index.h"
+
+const char* dict_get_definition(DictMmap *dict, const FlatTreeEntry *entry, size_t *out_len, char **out_to_free) {
+    if (!dict || !entry) return NULL;
+    if (out_len) *out_len = entry->d_len;
+    if (out_to_free) *out_to_free = NULL;
+
+    if (dict->is_compressed && dict->chunk_reader) {
+        char *decomp = dict_chunk_reader_get_definition(dict->chunk_reader, (uint64_t)entry->d_off, (uint64_t)entry->d_len);
+        if (out_to_free) *out_to_free = decomp;
+        return decomp;
+    }
+
+    return dict->data + entry->d_off;
+}
+
+static size_t dict_search_fts_scan(DictMmap *dict, GRegex *regex, size_t start_pos) {
+    if (!dict || !dict->index || start_pos >= dict->index->count || !regex)
+        return (size_t)-1;
+
+    for (size_t i = start_pos; i < dict->index->count; i++) {
+        const FlatTreeEntry *entry = flat_index_get(dict->index, i);
+        if (entry->d_len == 0) continue;
+
+        char *to_free = NULL;
+        size_t def_len = 0;
+        const char *def = dict_get_definition(dict, entry, &def_len, &to_free);
+        
+        if (def && g_regex_match_full(regex, def, (gssize)def_len, 0, 0, NULL, NULL)) {
+            if (to_free) g_free(to_free);
+            return i;
+        }
+        if (to_free) g_free(to_free);
+    }
+
+    return (size_t)-1;
+}
+
+size_t dict_search_fts(DictMmap *dict, const char *query, GRegex *regex, size_t start_pos) {
+    if (!dict || !dict->index || start_pos >= dict->index->count || !regex)
+        return (size_t)-1;
+
+    if (!query || strlen(query) < 3) {
+        return dict_search_fts_scan(dict, regex, start_pos);
+    }
+
+    if (!dict->fts_index) {
+        fprintf(stderr, "[FTS] Building trigram index for %zu entries...\n", flat_index_count(dict->index));
+        dict->fts_index = dict_fts_index_build(dict);
+        fprintf(stderr, "[FTS] Trigram index ready.\n");
+    }
+
+    if (!dict->fts_index) {
+        return dict_search_fts_scan(dict, regex, start_pos);
+    }
+
+    size_t indexed = dict_fts_index_search(dict->fts_index, dict, query, regex, start_pos);
+    if (indexed != (size_t)-1) {
+        return indexed;
+    }
+
+    return (size_t)-1;
+}
 
 
 

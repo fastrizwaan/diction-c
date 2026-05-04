@@ -71,3 +71,11 @@ DictFormat dict_detect_format(const char *path);
  * differ. */
 DictMmap* dict_load_any(const char *path, DictFormat fmt,
                         volatile gint *cancel_flag, gint expected_generation);
+
+/**
+ * Retrieve the uncompressed definition text for an entry.
+ * If the dictionary is compressed, a new string is allocated and must be freed by the caller.
+ * If out_to_free is non-NULL, it will be set to the pointer that needs to be freed (or NULL).
+ */
+const char* dict_get_definition(DictMmap *dict, const FlatTreeEntry *entry, size_t *out_len, char **out_to_free);
+size_t      dict_search_fts(DictMmap *dict, const char *query, GRegex *regex, size_t start_pos);

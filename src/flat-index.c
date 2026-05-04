@@ -189,13 +189,29 @@ static int sort_compare(const void *a, const void *b) {
 
 /* ── public API ──────────────────────────────────────── */
 
+#include "dict-chunked.h"
+
 FlatIndex* flat_index_open(const char *data, size_t size) {
     if (!data || size < 8) return NULL;
 
-    uint64_t count = *(const uint64_t *)data;
-    size_t index_size = (size_t)count * sizeof(FlatTreeEntry);
+    uint64_t count = 0;
+    size_t index_off = 0;
 
-    if (count == 0 || index_size + 8 > size) {
+    if (dict_cache_is_compressed(data, size)) {
+        const DictCacheHeader *h = (const DictCacheHeader *)data;
+        count = h->entry_count;
+        index_off = (size_t)h->index_off;
+    } else {
+        count = *(const uint64_t *)data;
+        size_t index_size = (size_t)count * sizeof(FlatTreeEntry);
+        if (count == 0 || index_size + 8 > size) {
+            index_off = 0;
+        } else {
+            index_off = size - index_size;
+        }
+    }
+
+    if (count == 0 || index_off == 0 || index_off >= size) {
         /* No index or invalid — return empty index */
         FlatIndex *idx = g_new0(FlatIndex, 1);
         if (!idx) return NULL;
@@ -206,7 +222,6 @@ FlatIndex* flat_index_open(const char *data, size_t size) {
         return idx;
     }
 
-    size_t index_off = size - index_size;
     const FlatTreeEntry *entries = (const FlatTreeEntry *)(data + index_off);
 
     FlatIndex *idx = g_new0(FlatIndex, 1);
@@ -272,23 +287,7 @@ size_t flat_index_search_prefix(const FlatIndex *idx, const char *prefix) {
     return result;
 }
 
-size_t flat_index_search_fts(const FlatIndex *idx, GRegex *regex, size_t start_pos) {
-    if (!idx || !idx->entries || start_pos >= idx->count || !regex)
-        return (size_t)-1;
 
-    for (size_t i = start_pos; i < idx->count; i++) {
-        const FlatTreeEntry *entry = &idx->entries[i];
-        if (entry->d_len == 0) continue;
-
-        const char *def = idx->mmap_data + entry->d_off;
-        /* Match without string copy, bounding to definition length. */
-        if (g_regex_match_full(regex, def, (gssize)entry->d_len, 0, 0, NULL, NULL)) {
-            return i;
-        }
-    }
-
-    return (size_t)-1;
-}
 
 const FlatTreeEntry* flat_index_get(const FlatIndex *idx, size_t pos) {
     if (!idx || !idx->entries || pos >= idx->count)
@@ -317,7 +316,14 @@ size_t flat_index_count(const FlatIndex *idx) {
 bool flat_index_validate(const FlatIndex *idx) {
     if (!idx || !idx->entries) return false;
 
-    size_t data_region_end = idx->mmap_size - (idx->count * sizeof(FlatTreeEntry));
+    gboolean is_comp = dict_cache_is_compressed(idx->mmap_data, idx->mmap_size);
+    size_t headword_region_end = idx->mmap_size - (idx->count * sizeof(FlatTreeEntry));
+    size_t data_region_end = headword_region_end;
+    
+    if (is_comp) {
+        const DictCacheHeader *h = (const DictCacheHeader *)idx->mmap_data;
+        headword_region_end = (size_t)(h->headwords_off + h->headwords_len);
+    }
 
     for (size_t i = 0; i < idx->count; i++) {
         int64_t h_off = idx->entries[i].h_off;
@@ -325,10 +331,13 @@ bool flat_index_validate(const FlatIndex *idx) {
         int64_t d_off = idx->entries[i].d_off;
         uint64_t d_len = idx->entries[i].d_len;
 
-        if (h_off < 8 || (uint64_t)h_off >= data_region_end) return false;
-        if (d_off < 8 || (uint64_t)d_off >= data_region_end) return false;
-        if ((uint64_t)h_off + h_len > data_region_end) return false;
-        if ((uint64_t)d_off + d_len > data_region_end) return false;
+        if (h_off < 8 || (uint64_t)h_off >= headword_region_end) return false;
+        if ((uint64_t)h_off + h_len > headword_region_end) return false;
+
+        if (!is_comp) {
+            if (d_off < 8 || (uint64_t)d_off >= data_region_end) return false;
+            if ((uint64_t)d_off + d_len > data_region_end) return false;
+        }
     }
 
     return true;

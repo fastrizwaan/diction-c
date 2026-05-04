@@ -18,6 +18,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include "settings.h"
+#include "dict-cache-builder.h"
+#include "dict-chunked.h"
 
 #define SLOB_MAGIC "\x21\x2d\x31\x53\x4c\x4f\x42\x1f"
 
@@ -213,16 +215,30 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
            1. Map Refs to Item/Bin.
            2. Decompress Items and write to cache, updating offsets.
         */
+        if (!dict_cache_prepare_target_path(cache_path, (guint64) st_file.st_size)) {
+            munmap(map, st_file.st_size);
+            close(fd);
+            g_free(title);
+            g_free(cache_path);
+            return NULL;
+        }
+
+        DictCacheBuilder *builder = dict_cache_builder_new(cache_path, hdr.refs_count);
+        if (!builder) {
+            munmap(map, st_file.st_size);
+            close(fd);
+            g_free(title);
+            g_free(cache_path);
+            return NULL;
+        }
+
         typedef struct { uint32_t item_idx; uint16_t bin_idx; int64_t h_off; uint64_t h_len; } TempRef;
         TempRef *temp_refs = g_malloc_n(hdr.refs_count, sizeof(TempRef));
-        
-        GString *hw_data = g_string_new("");
-        g_string_append_len(hw_data, "\0\0\0\0\0\0\0\0", 8);
 
         uint64_t refs_block_end = hdr.refs_offset + (uint64_t)hdr.refs_count * 8;
         for (uint32_t i = 0; i < hdr.refs_count; i++) {
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
-                g_string_free(hw_data, TRUE); g_free(temp_refs); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL;
+                dict_cache_builder_free(builder); g_free(temp_refs); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL;
             }
             if (i % 500 == 0) {
                 settings_scan_progress_notify(path, (int)(i * 20 / hdr.refs_count)); /* 20% for ref scan */
@@ -231,30 +247,16 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
             const unsigned char *re_p = (unsigned char*)map + refs_block_end + ref_ptr;
             char *key = read_slob_text(&re_p, end);
             if (!key) { temp_refs[i].h_len = 0; continue; }
-            temp_refs[i].h_off = hw_data->len;
+            uint64_t hw_off = 0;
+            dict_cache_builder_add_headword(builder, key, strlen(key), &hw_off);
+            temp_refs[i].h_off = hw_off;
             temp_refs[i].h_len = strlen(key);
-            g_string_append(hw_data, key);
             temp_refs[i].item_idx = read_u32be(re_p); re_p += 4;
             temp_refs[i].bin_idx = read_u16be(re_p);
             g_free(key);
         }
 
         /* Now decompress items and store in cache */
-        if (!dict_cache_prepare_target_path(cache_path, (guint64) st_file.st_size)) {
-            g_free(temp_refs);
-            g_string_free(hw_data, TRUE);
-            munmap(map, st_file.st_size);
-            close(fd);
-            g_free(title);
-            g_free(cache_path);
-            return NULL;
-        }
-        FILE *cf = g_fopen(cache_path, "wb");
-        if (!cf) { g_free(temp_refs); g_string_free(hw_data, TRUE); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL; }
-        
-        fwrite("\0\0\0\0\0\0\0\0", 8, 1, cf); // Dummy count
-        fwrite(hw_data->str + 8, 1, hw_data->len - 8, cf);
-        
         uint64_t *bin_cache_offsets = g_malloc0(sizeof(uint64_t) * hdr.refs_count);
         uint32_t *bin_cache_lens = g_malloc0(sizeof(uint32_t) * hdr.refs_count);
 
@@ -269,8 +271,8 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
         const unsigned char *items_offsets_p = (unsigned char*)map + hdr.items_offset;
         for (uint32_t i = 0; i < hdr.items_count; i++) {
             if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
-                g_free(item_to_refs); g_free(bin_cache_offsets); g_free(bin_cache_lens); g_free(temp_refs); g_string_free(hw_data, TRUE);
-                fclose(cf); unlink(cache_path); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL;
+                g_free(item_to_refs); g_free(bin_cache_offsets); g_free(bin_cache_lens); g_free(temp_refs);
+                dict_cache_builder_free(builder); unlink(cache_path); munmap(map, st_file.st_size); close(fd); g_free(title); return NULL;
             }
             if (i % 100 == 0) {
                 settings_scan_progress_notify(path, 20 + (int)(i * 70 / hdr.items_count)); /* 70% for item decompression */
@@ -294,9 +296,10 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
                         uint32_t b_off = read_u32be(tbl + b_idx * 4);
                         const unsigned char *b_data_p = decomp + bins_count * 4 + b_off;
                         uint32_t b_len = read_u32be(b_data_p);
-                        bin_cache_offsets[ref_idx] = ftell(cf);
+                        uint64_t def_off = 0;
+                        dict_cache_builder_add_definition(builder, (const char *)b_data_p + 4, b_len, &def_off);
+                        bin_cache_offsets[ref_idx] = def_off;
                         bin_cache_lens[ref_idx] = b_len;
-                        fwrite(b_data_p + 4, 1, b_len, cf);
                     }
                 }
                 g_free(decomp);
@@ -318,15 +321,24 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
         }
         g_free(temp_refs); g_free(bin_cache_offsets); g_free(bin_cache_lens);
 
-        flat_index_sort_entries(final_entries, valid_cnt, hw_data->str, hw_data->len);
-        fwrite(final_entries, sizeof(TreeEntry), valid_cnt, cf);
-        uint64_t count_be = valid_cnt;
-        fseek(cf, 0, SEEK_SET);
-        fwrite(&count_be, 8, 1, cf);
-        fclose(cf);
+        dict_cache_builder_flush(builder);
+        int sort_fd = open(cache_path, O_RDONLY);
+        if (sort_fd >= 0) {
+            struct stat sort_st;
+            if (fstat(sort_fd, &sort_st) == 0 && sort_st.st_size > 0) {
+                const char *sort_map = mmap(NULL, (size_t)sort_st.st_size, PROT_READ, MAP_PRIVATE, sort_fd, 0);
+                if (sort_map != MAP_FAILED) {
+                    flat_index_sort_entries(final_entries, valid_cnt, sort_map, (size_t)sort_st.st_size);
+                    munmap((void*)sort_map, (size_t)sort_st.st_size);
+                }
+            }
+            close(sort_fd);
+        }
+        dict_cache_builder_finalize(builder, final_entries, valid_cnt);
+        dict_cache_builder_free(builder);
         settings_scan_progress_notify(path, 95);
         dict_cache_sync_mtime(cache_path, &path, 1);
-        g_free(final_entries); g_string_free(hw_data, TRUE);
+        g_free(final_entries);
     }
     
     munmap(map, st_file.st_size); close(fd);
@@ -345,6 +357,10 @@ DictMmap* parse_slob_file(const char *path, volatile gint *cancel_flag, gint exp
     dm->name = title ? title : g_path_get_basename(path);
     dm->source_dir = g_path_get_dirname(path);
     dm->index = flat_index_open(dm->data, dm->size);
+    if (dict_cache_is_compressed(dm->data, dm->size)) {
+        dm->is_compressed = TRUE;
+        dm->chunk_reader = dict_chunk_reader_new(dm->data, dm->size, (const DictCacheHeader*)dm->data);
+    }
 
     settings_scan_progress_notify(path, 100);
     g_free(cache_path);

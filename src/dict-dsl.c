@@ -17,6 +17,8 @@
 #include <archive_entry.h>
 #include "dict-cache.h"
 #include "settings.h"
+#include "dict-chunked.h"
+#include "dict-cache-builder.h"
 
 /* insert_balanced removed — flat index uses sorted array + binary search */
 
@@ -121,6 +123,72 @@ typedef struct {
     size_t offset;
     size_t length;
 } HwSpan;
+
+static gboolean build_compressed_dsl_cache(const char *out_path,
+                                           const char *raw_data,
+                                           size_t raw_size,
+                                           TreeEntry *entries,
+                                           size_t entry_count) {
+    DictCacheBuilder *builder = dict_cache_builder_new(out_path, entry_count);
+    if (!builder) return FALSE;
+
+    GHashTable *def_offsets = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+
+    for (size_t i = 0; i < entry_count; i++) {
+        uint64_t hw_off = 0;
+        uint64_t def_off = 0;
+        uint64_t src_def_off = (uint64_t)entries[i].d_off;
+
+        dict_cache_builder_add_headword(builder,
+                                        raw_data + entries[i].h_off,
+                                        (size_t)entries[i].h_len,
+                                        &hw_off);
+
+        uint64_t lookup_key = src_def_off;
+        uint64_t *existing = g_hash_table_lookup(def_offsets, &lookup_key);
+        if (existing) {
+            def_off = *existing;
+        } else {
+            if (src_def_off > raw_size || entries[i].d_len > raw_size - src_def_off) {
+                g_hash_table_destroy(def_offsets);
+                dict_cache_builder_free(builder);
+                return FALSE;
+            }
+            dict_cache_builder_add_definition(builder,
+                                             raw_data + src_def_off,
+                                             (size_t)entries[i].d_len,
+                                             &def_off);
+            uint64_t *key = g_new(uint64_t, 1);
+            uint64_t *value = g_new(uint64_t, 1);
+            *key = src_def_off;
+            *value = def_off;
+            g_hash_table_insert(def_offsets, key, value);
+        }
+
+        entries[i].h_off = (int64_t)hw_off;
+        entries[i].d_off = (int64_t)def_off;
+    }
+
+    dict_cache_builder_flush(builder);
+
+    int sort_fd = open(out_path, O_RDONLY);
+    if (sort_fd >= 0) {
+        struct stat sort_st;
+        if (fstat(sort_fd, &sort_st) == 0 && sort_st.st_size > 0) {
+            const char *sort_map = mmap(NULL, (size_t)sort_st.st_size, PROT_READ, MAP_PRIVATE, sort_fd, 0);
+            if (sort_map != MAP_FAILED) {
+                flat_index_sort_entries(entries, entry_count, sort_map, (size_t)sort_st.st_size);
+                munmap((void *)sort_map, (size_t)sort_st.st_size);
+            }
+        }
+        close(sort_fd);
+    }
+
+    dict_cache_builder_finalize(builder, entries, (uint64_t)entry_count);
+    dict_cache_builder_free(builder);
+    g_hash_table_destroy(def_offsets);
+    return TRUE;
+}
 
 static void dsl_parse_headers(DictMmap *dict, const char *data, size_t size) {
     if (!data || size < 8) return;
@@ -472,12 +540,33 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         dict->data = (const char*)map;
         dict->index = flat_index_open(dict->data, dict->size);
 
-        /* Parse metadata (name/languages) from UTF-8 data portion of the cache */
+        if (dict_cache_is_compressed(dict->data, dict->size)) {
+            dict->is_compressed = TRUE;
+            dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+            if (!dict->index || !flat_index_validate(dict->index)) {
+                fprintf(stderr, "[DSL] Compressed cache index validation failed for %s.\n", path);
+                flat_index_close(dict->index);
+                dict->index = g_new0(FlatIndex, 1);
+                dict->index->mmap_data = dict->data;
+                dict->index->mmap_size = dict->size;
+            }
+            if (!dict->name) {
+                char *base = g_path_get_basename(path);
+                dict->name = g_strdup(base);
+                g_free(base);
+            }
+            close(dict->fd);
+            dict->fd = -1;
+            g_free(cache_path);
+            return dict;
+        }
+
+        /* Parse metadata (name/languages) from UTF-8 data portion of the legacy raw cache */
         dsl_parse_headers(dict, dict->data + 8, dict->size - 8);
 
         // Fast load: read index from end
         uint64_t count = *(uint64_t*)dict->data;
-        int need_index = (count == 0);
+        int need_index = 1; /* Legacy raw caches are upgraded to compressed caches. */
 
         TreeEntry *entries = NULL;
         size_t index_size = 0;
@@ -504,8 +593,7 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                     if ((uint64_t)d_off + d_len > data_region_end) { valid_index = FALSE; break; }
                 }
                 if (valid_index) {
-                    /* Index already loaded via flat_index_open — no insert needed */
-                    printf("[DSL] Fast-loaded %lu entries from cache.\n", (unsigned long)count);
+                    printf("[DSL] Upgrading legacy raw cache with %lu entries.\n", (unsigned long)count);
                     /* Ensure a name exists for UI (some caches omit it) */
                     /* Ensure a name exists for UI (fallback if #NAME was missing) */
                     if (!dict->name) {
@@ -547,16 +635,8 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                 guint64 cache_bytes_hint = (stat(path, &src_st) == 0 && src_st.st_size > 0)
                     ? (guint64) src_st.st_size
                     : 0;
-                FILE *f_tmp = dict_cache_prepare_target_path(tmp_cache, cache_bytes_hint)
-                    ? fopen(tmp_cache, "wb")
-                    : NULL;
-                if (f_tmp) {
-                    uint64_t final_cnt = (uint64_t)word_count;
-                    fwrite(&final_cnt, 8, 1, f_tmp);
-                    fwrite(dict->data + 8, 1, data_size - 8, f_tmp);
-                    fwrite(entries, sizeof(TreeEntry), word_count, f_tmp);
-                    fclose(f_tmp);
-
+                if (dict_cache_prepare_target_path(tmp_cache, cache_bytes_hint) &&
+                    build_compressed_dsl_cache(tmp_cache, dict->data, data_size, entries, word_count)) {
                     // Sync time to match original
                     if (stat(path, &src_st) == 0) {
                         struct utimbuf times = { .actime = src_st.st_mtime, .modtime = src_st.st_mtime };
@@ -580,6 +660,11 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                         // Reopen flat index with new data
                         flat_index_close(dict->index);
                         dict->index = flat_index_open(dict->data, dict->size);
+                        if (dict_cache_is_compressed(dict->data, dict->size)) {
+                            if (dict->chunk_reader) dict_chunk_reader_free(dict->chunk_reader);
+                            dict->is_compressed = TRUE;
+                            dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+                        }
                         printf("[DSL] Auto-upgraded cache for %s (%lu entries).\n", path, (unsigned long)word_count);
                     } else {
                         fprintf(stderr, "[DSL] Failed to rename upgraded cache to %s\n", cache_path);
@@ -765,42 +850,56 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         size_t word_count = parse_dsl_into_entries(dict, &entries, dict->size, 8, path, cancel_flag, expected);
 
         if (word_count > 0 && entries) {
-            // Append entries to cache file
-            lseek(dict->fd, 0, SEEK_END);
-            write(dict->fd, entries, word_count * sizeof(TreeEntry));
-
-            // Update count at beginning
-            lseek(dict->fd, 0, SEEK_SET);
-            uint64_t final_count = (uint64_t)word_count;
-            write(dict->fd, &final_count, 8);
+            char *compressed_tmp = g_strdup_printf("%s.comp", cache_path);
+            if (!dict_cache_prepare_target_path(compressed_tmp, cache_bytes_hint) ||
+                !build_compressed_dsl_cache(compressed_tmp, dict->data, dict->size, entries, word_count)) {
+                fprintf(stderr, "[DSL] Failed to build compressed cache for %s\n", path);
+                munmap(map, dict->size);
+                close(dict->fd);
+                unlink(tmp_cache);
+                unlink(compressed_tmp);
+                g_free(compressed_tmp);
+                g_free(entries);
+                g_free(tmp_cache);
+                g_free(cache_path);
+                g_free(dict);
+                return NULL;
+            }
 
             g_free(entries);
-        }
 
-        // Sync cache mtime to match source (after all writes including index)
-        {
-            struct stat src_st;
-            if (stat(path, &src_st) == 0) {
-                struct utimbuf times;
-                times.actime = src_st.st_mtime;
-                times.modtime = src_st.st_mtime;
-                utime(tmp_cache, &times);
+            // Sync cache mtime to match source
+            {
+                struct stat src_st;
+                if (stat(path, &src_st) == 0) {
+                    struct utimbuf times;
+                    times.actime = src_st.st_mtime;
+                    times.modtime = src_st.st_mtime;
+                    utime(compressed_tmp, &times);
+                }
             }
-        }
 
-        // Atomic Swap
-        if (rename(tmp_cache, cache_path) != 0) {
-            fprintf(stderr, "[DSL] Failed to rename temp cache to %s\n", cache_path);
             munmap(map, dict->size);
             close(dict->fd);
-            g_free(tmp_cache);
-            g_free(cache_path);
-            g_free(dict);
-            return NULL;
+            unlink(tmp_cache);
+
+            // Atomic Swap
+            if (rename(compressed_tmp, cache_path) != 0) {
+                fprintf(stderr, "[DSL] Failed to rename temp cache to %s\n", cache_path);
+                unlink(compressed_tmp);
+                g_free(compressed_tmp);
+                g_free(tmp_cache);
+                g_free(cache_path);
+                g_free(dict);
+                return NULL;
+            }
+            g_free(compressed_tmp);
+        } else {
+            munmap(map, dict->size);
+            close(dict->fd);
         }
 
         // Remap as read-only for final use
-        munmap(map, dict->size);
         struct stat st_final;
         if (stat(cache_path, &st_final) == 0) {
             dict->size = st_final.st_size;
@@ -816,6 +915,10 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
 
         // Open flat index from the newly written cache
         dict->index = flat_index_open(dict->data, dict->size);
+        if (dict_cache_is_compressed(dict->data, dict->size)) {
+            dict->is_compressed = TRUE;
+            dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+        }
         g_free(tmp_cache);
     }
 

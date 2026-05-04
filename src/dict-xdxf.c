@@ -1,6 +1,8 @@
 #include "dict-mmap.h"
 #include "flat-index.h"
+#include "dict-chunked.h"
 #include "dict-cache.h"
+#include "dict-cache-builder.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -132,9 +134,8 @@ static char* decompress_xdxf_dz(const char *dz_path, const char *temp_dir) {
 }
 
 typedef struct {
-    FILE *out_file;
+    DictCacheBuilder *builder;
     GArray *entries;
-    uint64_t current_offset;
     char *dict_name;
     char *source_lang;
     char *target_lang;
@@ -149,6 +150,10 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
 
         const xmlChar *name = xmlTextReaderConstLocalName(reader);
         int type = xmlTextReaderNodeType(reader);
+        if (!name) {
+            ret = xmlTextReaderRead(reader);
+            continue;
+        }
         
         if (type == XML_READER_TYPE_ELEMENT && xmlStrEqual(name, (const xmlChar*)"ar")) {
             total_ars++;
@@ -271,7 +276,7 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
                                 xmlFree(k_attr);
                             } else {
                                 // If 'k' is missing, use the text content as the link target
-                                if (xmlTextReaderExpand(reader) >= 0) {
+                                if (xmlTextReaderExpand(reader) != NULL) {
                                     xmlNodePtr node = xmlTextReaderCurrentNode(reader);
                                     xmlChar *val = xmlNodeGetContent(node);
                                     if (val) {
@@ -403,18 +408,17 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
                 // Write payload to index
                 if (hw_str->len > 0) {
                     TreeEntry entry;
-                    entry.h_off = state->current_offset;
-                    entry.h_len = hw_str->len;
-                    fwrite(hw_str->str, 1, hw_str->len, state->out_file);
-                    fputc(0, state->out_file);
+                    uint64_t hw_off = 0, def_off = 0;
                     
-                    entry.d_off = entry.h_off + entry.h_len + 1;
+                    dict_cache_builder_add_headword(state->builder, hw_str->str, hw_str->len, &hw_off);
+                    dict_cache_builder_add_definition(state->builder, def_str->str, def_str->len, &def_off);
+                    
+                    entry.h_off = (int64_t)hw_off;
+                    entry.h_len = hw_str->len;
+                    entry.d_off = (int64_t)def_off;
                     entry.d_len = def_str->len;
-                    fwrite(def_str->str, 1, def_str->len, state->out_file);
-                    fputc(0, state->out_file);
                     
                     g_array_append_val(state->entries, entry);
-                    state->current_offset += entry.h_len + 1 + entry.d_len + 1;
                 }
                 
                 g_string_free(hw_str, TRUE);
@@ -489,10 +493,34 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
 
                 dict->source_dir = g_canonicalize_filename(g_path_get_dirname(path), NULL);
                 dict->index = flat_index_open(data, size);
-                g_free(cache_path);
-                return dict;
+                if (dict_cache_is_compressed(dict->data, dict->size)) {
+                    dict->is_compressed = TRUE;
+                    dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+                    if (!dict->chunk_reader || !flat_index_validate(dict->index)) {
+                        fprintf(stderr, "[XDXF] Compressed cache validation failed for %s; rebuilding.\n", path);
+                        flat_index_close(dict->index);
+                        if (dict->chunk_reader) dict_chunk_reader_free(dict->chunk_reader);
+                        resource_reader_close(dict->resource_reader);
+                        g_free(dict->name);
+                        g_free(dict->source_lang);
+                        g_free(dict->target_lang);
+                        g_free(dict->resource_dir);
+                        g_free(dict->source_dir);
+                        munmap((void*)dict->data, dict->size);
+                        close(dict->fd);
+                        fd = -1;
+                        g_free(dict);
+                        unlink(cache_path);
+                    } else {
+                        g_free(cache_path);
+                        return dict;
+                    }
+                } else {
+                    g_free(cache_path);
+                    return dict;
+                }
             }
-            close(fd);
+            if (fd >= 0) close(fd);
         }
     }
 
@@ -554,46 +582,68 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
         return NULL;
     }
 
-    FILE *cache_file = fopen(cache_path, "wb");
-    uint64_t zero_count = 0;
-    fwrite(&zero_count, 8, 1, cache_file);
+    DictCacheBuilder *builder = dict_cache_builder_new(cache_path, 10000); // hint 10k entries
+    if (!builder) {
+        if (xml_path != path) { unlink(xml_path); g_free(xml_path); }
+        g_free(res_dir);
+        g_free(cache_path);
+        return NULL;
+    }
 
     XdxfParserState state = {0};
-    state.out_file = cache_file;
+    state.builder = builder;
     state.entries = g_array_new(FALSE, TRUE, sizeof(TreeEntry));
-    state.current_offset = 8;
     state.resource_dir = res_dir;
 
     process_xml_xdxf(reader, &state, path, cancel_flag, expected);
 
     xmlFreeTextReader(reader);
     if (xml_path != path) {
-        /* If it was extracted from archive, it's in res_dir. We might want to keep it? 
-         * Actually, we only need the indexed data for dictionary content, 
-         * BUT the user might want resources. 
-         * We keep everything in res_dir. */
+        /* Keep in res_dir */
+    }
+
+    if (cancel_flag && g_atomic_int_get(cancel_flag) != expected) {
+        dict_cache_builder_free(builder);
+        g_array_free(state.entries, TRUE);
+        g_free(state.dict_name);
+        g_free(state.source_lang);
+        g_free(state.target_lang);
+        if (xml_path != path) { unlink(xml_path); g_free(xml_path); }
+        g_free(res_dir);
+        g_free(cache_path);
+        return NULL;
     }
 
     if (state.entries->len > 0) {
-        fflush(cache_file);
-        long data_end = ftell(cache_file);
+        /* Sort entries for binary search */
+        dict_cache_builder_flush(builder);
         
-        // Map back to sort
-        int tmp_fd = open(cache_path, O_RDONLY);
-        const char *tmp_data = mmap(NULL, data_end, PROT_READ, MAP_PRIVATE, tmp_fd, 0);
+        int sort_fd = open(cache_path, O_RDONLY);
+        if (sort_fd >= 0) {
+            struct stat st_tmp;
+            fstat(sort_fd, &st_tmp);
+            void *sort_mmap = mmap(NULL, (size_t)st_tmp.st_size, PROT_READ, MAP_PRIVATE, sort_fd, 0);
+            if (sort_mmap != MAP_FAILED) {
+                flat_index_sort_entries((TreeEntry*)state.entries->data, state.entries->len, sort_mmap, (size_t)st_tmp.st_size);
+                munmap(sort_mmap, (size_t)st_tmp.st_size);
+            }
+            close(sort_fd);
+        }
         
-        flat_index_sort_entries((TreeEntry*)state.entries->data, state.entries->len, tmp_data, data_end);
-        
-        munmap((void*)tmp_data, data_end);
-        close(tmp_fd);
-        
-        fseek(cache_file, data_end, SEEK_SET);
-        fwrite(state.entries->data, sizeof(TreeEntry), state.entries->len, cache_file);
-        fseek(cache_file, 0, SEEK_SET);
-        uint64_t count = state.entries->len;
-        fwrite(&count, 8, 1, cache_file);
+        dict_cache_builder_finalize(builder, (TreeEntry*)state.entries->data, state.entries->len);
+    } else {
+        fprintf(stderr, "[XDXF] No entries parsed from %s\n", xml_path);
+        dict_cache_builder_free(builder);
+        g_array_free(state.entries, TRUE);
+        g_free(state.dict_name);
+        g_free(state.source_lang);
+        g_free(state.target_lang);
+        if (xml_path != path) { unlink(xml_path); g_free(xml_path); }
+        g_free(res_dir);
+        g_free(cache_path);
+        return NULL;
     }
-    fclose(cache_file);
+    dict_cache_builder_free(builder);
 
     const char *archive_path = NULL;
     if (ends_with_ci(path, ".tar.bz2") || ends_with_ci(path, ".tar.gz") || ends_with_ci(path, ".tar.xz") || ends_with_ci(path, ".tgz") || ends_with_ci(path, ".zip")) {
@@ -607,10 +657,38 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
 
     // Finally open the cache
     int fd = open(cache_path, O_RDONLY);
+    if (fd < 0) {
+        g_array_free(state.entries, TRUE);
+        g_free(state.dict_name);
+        g_free(state.source_lang);
+        g_free(state.target_lang);
+        g_free(res_dir);
+        g_free(cache_path);
+        return NULL;
+    }
     struct stat st;
-    fstat(fd, &st);
+    if (fstat(fd, &st) != 0 || st.st_size < (off_t)sizeof(DictCacheHeader)) {
+        close(fd);
+        g_array_free(state.entries, TRUE);
+        g_free(state.dict_name);
+        g_free(state.source_lang);
+        g_free(state.target_lang);
+        g_free(res_dir);
+        g_free(cache_path);
+        return NULL;
+    }
     size_t size = st.st_size;
     const char *data = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (data == MAP_FAILED) {
+        close(fd);
+        g_array_free(state.entries, TRUE);
+        g_free(state.dict_name);
+        g_free(state.source_lang);
+        g_free(state.target_lang);
+        g_free(res_dir);
+        g_free(cache_path);
+        return NULL;
+    }
     
     DictMmap *dict = g_new0(DictMmap, 1);
     dict->fd = fd;
@@ -620,6 +698,11 @@ DictMmap* parse_xdxf_file(const char *path, volatile gint *cancel_flag, gint exp
     dict->source_lang = state.source_lang;
     dict->target_lang = state.target_lang;
     dict->index = flat_index_open(data, size);
+
+    if (dict_cache_is_compressed(dict->data, dict->size)) {
+        dict->is_compressed = TRUE;
+        dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+    }
     
     // Set resource directory if we extracted an archive
     if (archive_path) {

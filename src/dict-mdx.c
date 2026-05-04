@@ -4,6 +4,7 @@
  */
 
 #include "dict-mmap.h"
+#include "dict-cache-builder.h"
 #include "langpair.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -1136,15 +1137,6 @@ rebuild_cache:
         g_free(dict_encoding);
         return NULL;
     }
-    FILE *cache = fopen(cache_path, "wb");
-    if (!cache) {
-        if (fh) fclose(fh);
-        g_free(cache_path);
-        return NULL;
-    }
-
-    uint64_t zero_count = 0;
-    fwrite(&zero_count, 8, 1, cache); 
 
     fseek(fh, 4 + header_text_size + 4, SEEK_SET); // skip HeaderLen + Header + Checksum
 
@@ -1153,27 +1145,30 @@ rebuild_cache:
     fread(kbh, 1, kbh_size, fh);
 
     const unsigned char *kp = kbh;
-    uint64_t num_key_blocks = read_num(&kp, num_size); // Read but not used in this context
-    (void)num_key_blocks; // Suppress unused variable warning
+    uint64_t num_key_blocks = read_num(&kp, num_size);
+    (void)num_key_blocks;
     uint64_t num_entries = read_num(&kp, num_size);
     uint64_t kbi_decomp = is_v2 ? read_num(&kp, num_size) : 0;
     uint64_t kbi_comp = read_num(&kp, num_size);
     uint64_t kb_data_size = read_num(&kp, num_size);
     g_free(kbh);
 
+#include "dict-cache-builder.h"
+
+    DictCacheBuilder *builder = dict_cache_builder_new(cache_path, num_entries);
+    if (!builder) {
+        if (fh) fclose(fh);
+        g_free(cache_path);
+        return NULL;
+    }
+
     if (is_v2) fseek(fh, 4, SEEK_CUR);
     unsigned char *kbi_raw = g_malloc(kbi_comp);
     fread(kbi_raw, 1, kbi_comp, fh);
 
-    /* --- BUFFERED WRITING FOR CACHE --- */
-    char *write_buf = g_malloc(1024 * 1024);
-    setvbuf(cache, write_buf, _IOFBF, 1024 * 1024);
-
-    TreeEntry *tree_entries = g_malloc0_n(num_entries, sizeof(TreeEntry));
+    FlatTreeEntry *tree_entries = g_malloc0_n(num_entries, sizeof(FlatTreeEntry));
     size_t valid_count = 0;
     size_t valid_count_processed = 0;
-    long headword_section_end = 0;
-    (void)valid_count_processed; /* will be used in record loop */
 
     size_t kbi_dlen = 0;
     unsigned char *kbi_data = NULL;
@@ -1270,9 +1265,8 @@ rebuild_cache:
                         }
 
                         size_t wlen = strlen(word);
-                        long hw_off = ftell(cache);
-                        fwrite(word, 1, wlen, cache);
-                        fwrite("\n", 1, 1, cache);
+                        uint64_t hw_off = 0;
+                        dict_cache_builder_add_headword(builder, word, wlen, &hw_off);
 
                         tree_entries[valid_count].h_off = (int64_t)hw_off;
                         tree_entries[valid_count].h_len = (uint64_t)wlen;
@@ -1288,7 +1282,6 @@ rebuild_cache:
         g_free(kbi_data);
     } 
     
-    headword_section_end = ftell(cache);
     settings_scan_progress_notify(path, 40);
 
     fseek(fh, 4 + header_text_size + 4 + kbh_size + (is_v2?4:0) + kbi_comp + kb_data_size, SEEK_SET);
@@ -1333,9 +1326,6 @@ rebuild_cache:
                     if (next_id != (uint64_t)-1 && next_id < current_decomp_offset + dlen) {
                         rec_len = next_id - (uint64_t)tree_entries[entry_idx].d_off;
                     } else {
-                        /* This entry spans across blocks or is the very last one in MDX */
-                        /* Actually MDX records are block-aligned or at least we can find the end */
-                        /* For simplicity, we assume records don't span blocks (common in MDX) */
                         rec_len = dlen - rel_off;
                     }
 
@@ -1352,38 +1342,34 @@ rebuild_cache:
                         }
                     }
 
-                    long def_off = ftell(cache);
+                    char *utf8_def = NULL;
+                    size_t def_len = 0;
+
                     if (encoding_is_utf16) {
-                        if (rec_len >= 2 && rec_ptr[rec_len-1] == 0 && rec_ptr[rec_len-2] == 0) rec_len -= 2;
-                        char *utf8 = g_convert((const char *)rec_ptr, rec_len, "UTF-8", "UTF-16LE", NULL, NULL, NULL);
-                        if (utf8) {
-                            size_t ulen = strlen(utf8);
-                            fwrite(utf8, 1, ulen, cache);
-                            tree_entries[entry_idx].d_len = ulen;
-                            g_free(utf8);
-                        } else {
-                            fwrite(rec_ptr, 1, rec_len, cache);
-                            tree_entries[entry_idx].d_len = rec_len;
-                        }
+                        size_t rlen = rec_len;
+                        if (rlen >= 2 && rec_ptr[rlen-1] == 0 && rec_ptr[rlen-2] == 0) rlen -= 2;
+                        utf8_def = g_convert((const char *)rec_ptr, rlen, "UTF-8", "UTF-16LE", NULL, &def_len, NULL);
                     } else {
-                        if (rec_len > 0 && rec_ptr[rec_len-1] == 0) rec_len--;
+                        size_t rlen = rec_len;
+                        if (rlen > 0 && rec_ptr[rlen-1] == 0) rlen--;
                         if (dict_encoding) {
-                            char *utf8 = g_convert((const char*)rec_ptr, rec_len, "UTF-8", dict_encoding, NULL, NULL, NULL);
-                            if (utf8) {
-                                size_t ulen = strlen(utf8);
-                                fwrite(utf8, 1, ulen, cache);
-                                tree_entries[entry_idx].d_len = ulen;
-                                g_free(utf8);
-                            } else {
-                                fwrite(rec_ptr, 1, rec_len, cache);
-                                tree_entries[entry_idx].d_len = rec_len;
-                            }
+                            utf8_def = g_convert((const char*)rec_ptr, rlen, "UTF-8", dict_encoding, NULL, &def_len, NULL);
                         } else {
-                            fwrite(rec_ptr, 1, rec_len, cache);
-                            tree_entries[entry_idx].d_len = rec_len;
+                            utf8_def = g_strndup((const char*)rec_ptr, rlen);
+                            def_len = rlen;
                         }
                     }
-                    fwrite("\n", 1, 1, cache);
+
+                    uint64_t def_off = 0;
+                    if (utf8_def) {
+                        dict_cache_builder_add_definition(builder, utf8_def, def_len, &def_off);
+                        tree_entries[entry_idx].d_len = def_len;
+                        g_free(utf8_def);
+                    } else {
+                        dict_cache_builder_add_definition(builder, (const char*)rec_ptr, rec_len, &def_off);
+                        tree_entries[entry_idx].d_len = rec_len;
+                    }
+
                     tree_entries[entry_idx].d_off = (int64_t)def_off;
                     valid_count_processed++;
                 }
@@ -1396,33 +1382,31 @@ rebuild_cache:
     }
     g_free(rbs);
 
-    /* Sort entries for binary search using mmap for speed */
-    fflush(cache);
+    /* Sort entries for binary search */
     settings_scan_progress_notify(path, 85);
+    
+    /* We need to mmap the builder's file to sort. Builder keeps file open. */
+    dict_cache_builder_flush(builder);
     int sort_fd = open(cache_path, O_RDONLY);
     if (sort_fd >= 0) {
-        void *sort_mmap = mmap(NULL, (size_t)ftell(cache), PROT_READ, MAP_PRIVATE, sort_fd, 0);
+        struct stat st_tmp;
+        fstat(sort_fd, &st_tmp);
+        void *sort_mmap = mmap(NULL, (size_t)st_tmp.st_size, PROT_READ, MAP_PRIVATE, sort_fd, 0);
         if (sort_mmap != MAP_FAILED) {
-            /* Inform OS about sequential access for headwords */
-            if (headword_section_end > 0) {
-                madvise(sort_mmap, headword_section_end, MADV_WILLNEED);
-            }
-            flat_index_sort_entries(tree_entries, valid_count, sort_mmap, (size_t)ftell(cache));
-            munmap(sort_mmap, (size_t)ftell(cache));
+            flat_index_sort_entries(tree_entries, valid_count, sort_mmap, (size_t)st_tmp.st_size);
+            munmap(sort_mmap, (size_t)st_tmp.st_size);
         }
         close(sort_fd);
     }
-    settings_scan_progress_notify(path, 95);
-    fwrite(tree_entries, sizeof(TreeEntry), valid_count, cache);
 
-    fseek(cache, 0, SEEK_SET);
-    uint64_t final_cnt = (uint64_t)valid_count;
-    fwrite(&final_cnt, 8, 1, cache);
+    settings_scan_progress_notify(path, 95);
+    dict_cache_builder_finalize(builder, tree_entries, (uint64_t)valid_count);
+    
     if (valid_count == 0) {
         fprintf(stderr, "[MDX] Parsed zero entries for %s\n", path);
     }
-    
-    fclose(cache);
+
+    dict_cache_builder_free(builder);
     fclose(fh);
     g_free(dict_encoding);
 
@@ -1440,6 +1424,12 @@ rebuild_cache:
     dict->source_dir = source_dir;
     dict->mdx_stylesheet = stylesheet;
     dict->index = flat_index_open(dict->data, dict->size);
+
+    if (dict_cache_is_compressed(dict->data, dict->size)) {
+        dict->is_compressed = TRUE;
+        dict->chunk_reader = dict_chunk_reader_new(dict->data, dict->size, (const DictCacheHeader*)dict->data);
+    }
+
     g_free(tree_entries);
     g_free(cache_path);
 
@@ -1447,7 +1437,6 @@ rebuild_cache:
     mdx_detect_icon(dict, path);
     
     settings_scan_progress_notify(path, 100);
-    g_free(write_buf);
 
     return dict;
 }

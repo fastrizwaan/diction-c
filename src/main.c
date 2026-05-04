@@ -1965,7 +1965,7 @@ static gboolean continue_sidebar_search(gpointer user_data) {
                 state->has_current_pos = FALSE;
                 continue;
             }
-            size_t match_pos = flat_index_search_fts(state->current_dict->dict->index, state->fts_regex, state->current_pos);
+            size_t match_pos = dict_search_fts(state->current_dict->dict, state->query, state->fts_regex, state->current_pos);
             if (match_pos == (size_t)-1) {
                 processed += state->current_dict_count - state->current_pos;
                 state->has_current_pos = FALSE;
@@ -3648,8 +3648,11 @@ static void schedule_execute_search(void) {
 
 
 static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res) {
-    const char *def_ptr = entry->dict->data + res->d_off;
-    size_t def_len = res->d_len;
+    char *to_free = NULL;
+    size_t def_len = 0;
+    const char *def_ptr = dict_get_definition(entry->dict, res, &def_len, &to_free);
+
+    if (!def_ptr) return NULL;
 
     if (entry->format == DICT_FORMAT_MDX && def_len > 8 && g_str_has_prefix(def_ptr, "@@@LINK=")) {
         char link_target[1024];
@@ -3665,8 +3668,9 @@ static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res
         if (red_pos != (size_t)-1) {
             const FlatTreeEntry *red_res = flat_index_get(entry->dict->index, red_pos);
             if (red_res) {
-                def_ptr = entry->dict->data + red_res->d_off;
-                def_len = red_res->d_len;
+                if (to_free) g_free(to_free);
+                to_free = NULL;
+                def_ptr = dict_get_definition(entry->dict, red_res, &def_len, &to_free);
             }
         } else {
             /* Redirect target not found — render a clickable link instead of raw text */
@@ -3688,7 +3692,7 @@ static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res
 
     dict_render_set_resource_reader(entry->dict->resource_reader);
 
-    return dsl_render_to_html(
+    char *html = dsl_render_to_html(
         def_ptr, def_len,
         entry->dict->data + res->h_off, res->h_len,
         entry->format, entry->dict->resource_dir, entry->dict->source_dir, entry->dict->mdx_stylesheet, dark_mode,
@@ -3697,6 +3701,8 @@ static char* render_entry_def_to_html(DictEntry *entry, const FlatTreeEntry *res
         app_settings ? app_settings->font_family : NULL,
         app_settings ? app_settings->font_size : 0,
         fts_highlight_query);
+    if (to_free) g_free(to_free);
+    return html;
 }
 
 static void wrap_entry_in_style(GString *html_res, 
@@ -5697,13 +5703,18 @@ static char* sample_dict_and_detect_lang(DictEntry *entry) {
         if (!node) continue;
 
         char *hw = g_strndup(entry->dict->data + node->h_off, node->h_len);
-        char *def = g_strndup(entry->dict->data + node->d_off, node->d_len);
+        
+        char *to_free = NULL;
+        size_t def_len = 0;
+        const char *def_ptr = dict_get_definition(entry->dict, node, &def_len, &to_free);
+        char *def = g_strndup(def_ptr, def_len);
         
         g_string_append_printf(hw_samples, " %s ", hw);
         g_string_append_printf(def_samples, " %s ", def);
         
         g_free(hw);
         g_free(def);
+        if (to_free) g_free(to_free);
     }
 
     const char *hw_lang = langid_guess_language(hw_samples->str);
