@@ -1578,6 +1578,7 @@ static SidebarRowPayload *sidebar_payload_at(SidebarListView *sidebar, guint pos
     return g_ptr_array_index(sidebar->payloads, position);
 }
 
+#if 0
 static gboolean sidebar_list_select_payload(SidebarListView *sidebar, SidebarRowPayload *target) {
     if (!sidebar || !sidebar->selection_model || !sidebar->payloads) {
         return FALSE;
@@ -1591,6 +1592,7 @@ static gboolean sidebar_list_select_payload(SidebarListView *sidebar, SidebarRow
     gtk_single_selection_set_selected(sidebar->selection_model, GTK_INVALID_LIST_POSITION);
     return FALSE;
 }
+#endif
 
 static GtkWidget *sidebar_list_item_make_label(void) {
     GtkWidget *label = gtk_label_new("");
@@ -3323,7 +3325,7 @@ static GtkWidget *create_sidebar_list_view(SidebarListView *sidebar, GCallback a
     sidebar->payloads = g_ptr_array_new_with_free_func((GDestroyNotify)sidebar_row_payload_free);
     sidebar->selection_model = GTK_SINGLE_SELECTION(gtk_single_selection_new(G_LIST_MODEL(sidebar->string_list)));
     gtk_single_selection_set_autoselect(sidebar->selection_model, FALSE);
-    gtk_single_selection_set_can_unselect(sidebar->selection_model, TRUE);
+    gtk_single_selection_set_can_unselect(sidebar->selection_model, FALSE);
 
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
     g_signal_connect(factory, "setup", G_CALLBACK(sidebar_list_item_setup), NULL);
@@ -3343,7 +3345,7 @@ static void on_history_item_activated(GtkListView *view, guint position, gpointe
         append_rendered_word_html(payload->title);
     }
     if (sidebar && sidebar->selection_model) {
-        gtk_single_selection_set_selected(sidebar->selection_model, 0);
+        gtk_single_selection_set_selected(sidebar->selection_model, position);
     }
 }
 
@@ -3631,13 +3633,7 @@ static void on_favorites_item_activated(GtkListView *view, guint position, gpoin
         append_rendered_word_html(payload->title);
     }
     if (sidebar && sidebar->selection_model) {
-        for (guint i = 0; i < sidebar->payloads->len; i++) {
-            SidebarRowPayload *p = g_ptr_array_index(sidebar->payloads, i);
-            if (p && p->type == SIDEBAR_ROW_WORD && g_strcmp0(p->title, payload->title) == 0) {
-                gtk_single_selection_set_selected(sidebar->selection_model, i);
-                break;
-            }
-        }
+        gtk_single_selection_set_selected(sidebar->selection_model, position);
     }
 }
 
@@ -4815,6 +4811,11 @@ static void update_theme_colors(void) {
         "  color: #ffffff !important;\n"
         "  outline: none;\n"
         "  transition: none;\n"
+        "}\n"
+        "/* Ensure selected items remain highlighted even when focus is lost */\n"
+        "listview listitem:selected:backdrop, listview listitem:selected {\n"
+        "  background-color: @accent_bg_color !important;\n"
+        "  color: #ffffff !important;\n"
         "}\n"
         "/* Explicitly set webview backgrounds */\n"
         "webkitwebview, webview {\n"
@@ -6822,7 +6823,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     related_row_payloads = g_ptr_array_new_with_free_func((GDestroyNotify)related_row_payload_free);
     related_selection_model = GTK_SINGLE_SELECTION(gtk_single_selection_new(G_LIST_MODEL(related_string_list)));
     gtk_single_selection_set_autoselect(related_selection_model, FALSE);
-    gtk_single_selection_set_can_unselect(related_selection_model, TRUE);
+    gtk_single_selection_set_can_unselect(related_selection_model, FALSE);
 
     GtkListItemFactory *related_factory = gtk_signal_list_item_factory_new();
     g_signal_connect(related_factory, "setup", G_CALLBACK(related_list_item_setup), NULL);

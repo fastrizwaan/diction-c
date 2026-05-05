@@ -1416,10 +1416,31 @@ rebuild_cache:
     g_free(dict_encoding);
 
     cache_fd = open(cache_path, O_RDONLY);
+    if (cache_fd < 0) {
+        g_free(tree_entries);
+        g_free(cache_path);
+        g_free(source_dir);
+        g_free(stylesheet);
+        g_free(title);
+        g_free(s_lang);
+        g_free(t_lang);
+        return NULL;
+    }
     struct stat st_final;
     fstat(cache_fd, &st_final);
     dict_size = st_final.st_size;
     dict_data = mmap(NULL, dict_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
+    if (dict_data == MAP_FAILED) {
+        close(cache_fd);
+        g_free(tree_entries);
+        g_free(cache_path);
+        g_free(source_dir);
+        g_free(stylesheet);
+        g_free(title);
+        g_free(s_lang);
+        g_free(t_lang);
+        return NULL;
+    }
 
     DictMmap *dict = g_new0(DictMmap, 1);
     dict->fd = cache_fd;

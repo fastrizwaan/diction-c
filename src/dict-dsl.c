@@ -655,6 +655,11 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
                         if (dict->data == MAP_FAILED) {
                             dict->data = NULL;
                             fprintf(stderr, "[DSL] MAP_FAILED for upgraded cache %s\n", cache_path);
+                            close(dict->fd);
+                            dict->fd = -1;
+                            g_free(cache_path);
+                            g_free(dict);
+                            return NULL;
                         }
 
                         // Reopen flat index with new data
@@ -897,6 +902,11 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
         } else {
             munmap(map, dict->size);
             close(dict->fd);
+            unlink(tmp_cache);
+            g_free(tmp_cache);
+            g_free(cache_path);
+            g_free(dict);
+            return NULL;
         }
 
         // Remap as read-only for final use
@@ -905,10 +915,22 @@ DictMmap* dict_mmap_open(const char *path, volatile gint *cancel_flag, gint expe
             dict->size = st_final.st_size;
         }
         dict->fd = open(cache_path, O_RDONLY);
+        if (dict->fd < 0) {
+            fprintf(stderr, "[DSL] Failed to open final cache %s\n", cache_path);
+            g_free(tmp_cache);
+            g_free(cache_path);
+            g_free(dict);
+            return NULL;
+        }
         dict->data = (const char*)mmap(NULL, dict->size, PROT_READ, MAP_PRIVATE, dict->fd, 0);
         if (dict->data == MAP_FAILED) {
             dict->data = NULL;
             fprintf(stderr, "[DSL] MAP_FAILED for final cache %s\n", cache_path);
+            close(dict->fd);
+            g_free(tmp_cache);
+            g_free(cache_path);
+            g_free(dict);
+            return NULL;
         }
         close(dict->fd);
         dict->fd = -1;

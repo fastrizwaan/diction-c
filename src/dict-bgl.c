@@ -580,10 +580,16 @@ DictMmap* parse_bgl_file(const char *path, volatile gint *cancel_flag, gint expe
         }
 
         cache_fd = open(cache_path, O_RDONLY);
+        if (cache_fd < 0) { g_free(cache_path); return NULL; }
         struct stat st;
         fstat(cache_fd, &st);
         dict_size = st.st_size;
         dict_data = mmap(NULL, dict_size, PROT_READ, MAP_PRIVATE, cache_fd, 0);
+        if (dict_data == MAP_FAILED) {
+            close(cache_fd);
+            g_free(cache_path);
+            return NULL;
+        }
 
         DictMmap *dict = g_new0(DictMmap, 1);
         dict->fd = cache_fd;

@@ -130,6 +130,7 @@ static char *dsl_fallback_variant(const char *preferred_path) {
 
 /* ── format detection ────────────────────────────────────── */
 
+#if 0
 static int is_xdxf_archive(const char *path, char *out_xdxf, size_t out_sz) {
     struct archive *a = archive_read_new();
     struct archive_entry *entry;
@@ -163,6 +164,7 @@ static int is_xdxf_archive(const char *path, char *out_xdxf, size_t out_sz) {
     archive_read_free(a);
     return found;
 }
+#endif
 
 DictFormat dict_detect_format(const char *path) {
     if (ends_with_ci(path, ".dsl.dz") || ends_with_ci(path, ".dsl"))

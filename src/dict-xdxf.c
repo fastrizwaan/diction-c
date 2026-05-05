@@ -160,7 +160,7 @@ static void process_xml_xdxf(xmlTextReaderPtr reader, XdxfParserState *state, co
             if (total_ars % 100 == 0) {
                 /* We don't know total ARs, so we use a heuristic or just incrementing progress if possible.
                  * Actually, let's use byte offset from the reader if available. */
-                int64_t offset = xmlTextReaderByteConsumed(reader);
+                /* int64_t offset = xmlTextReaderByteConsumed(reader); */
                 /* We don't have total size here easily, but we can assume some progress. */
                 settings_scan_progress_notify(path, 30 + (total_ars / 500) % 65);
             }
